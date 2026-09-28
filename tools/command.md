@@ -1,0 +1,1 @@
+powershell -ExecutionPolicy Bypass -File "C:\Users\mahaj\OneDrive\Documents\PlatformIO\Projects\Esp_cam\tools\ffmpeg-sequence-to-video.ps1" -InputFolder "F:\recordings\2026-06-22_02-48-09" -FrameRate 15
