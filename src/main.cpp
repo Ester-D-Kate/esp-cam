@@ -27,14 +27,12 @@ void setup() {
     Serial.println("Record button pin disabled because it conflicts with the active board wiring");
   }
 
-  preferences.begin("wifi-config", false);
+  if (!preferences.begin("wifi-config", false)) {
+    Serial.println("Preferences unavailable; settings will not survive reboot");
+  }
+  WiFi.persistent(false);
   loadGyroSettings();
   loadConnectionError();
-
-  if (isGyroToggleEnabled() && !gyroHardwareAvailable()) {
-    saveGyroSettings(false, getGyroValidationRoute(), getGyroIdentityUuid());
-    persistConnectionError(ErrorType::Gyro, "Gyro hardware was not detected on GPIO3/GPIO13, so gyro verification was disabled");
-  }
 
   if (!initCamera()) {
     Serial.println("Continuing without a working camera");

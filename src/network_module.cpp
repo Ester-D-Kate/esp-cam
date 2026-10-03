@@ -2,17 +2,8 @@
 
 namespace {
 bool shouldShowViewer() {
-  if (runtimeMode == RuntimeMode::ConnectedIdle && WiFi.status() == WL_CONNECTED) {
-    return true;
-  }
-
-  if (runtimeMode == RuntimeMode::Recording &&
-      recordingSession.modeBeforeRecording == RuntimeMode::ConnectedIdle &&
-      WiFi.status() == WL_CONNECTED) {
-    return true;
-  }
-
-  return false;
+  return WiFi.status() == WL_CONNECTED &&
+         (runtimeMode == RuntimeMode::ConnectedIdle || runtimeMode == RuntimeMode::PostConnectValidation);
 }
 
 String buildSetupPage() {
@@ -286,7 +277,11 @@ String buildSetupPage() {
         const item = document.createElement('button');
         item.type = 'button';
         item.className = 'network';
-        item.innerHTML = '<span>' + network.ssid + '</span><span>' + network.rssi + ' dBm</span>';
+        const name = document.createElement('span');
+        const signal = document.createElement('span');
+        name.textContent = network.ssid;
+        signal.textContent = network.rssi + ' dBm';
+        item.append(name, signal);
         item.onclick = () => {
           $('ssid').value = network.ssid === '(hidden)' ? '' : network.ssid;
         };
@@ -302,22 +297,14 @@ String buildSetupPage() {
       const email = $('email');
       const authPassword = $('authPassword');
 
-      enabled.disabled = !available;
-      route.disabled = !available;
-      email.disabled = !available;
-      authPassword.disabled = !available;
-
-      if (!available) {
-        enabled.checked = false;
-        hint.textContent = 'Gyro hardware was not detected on GPIO3/GPIO13. Gyro verification is unavailable.';
-      } else {
-        hint.textContent = 'Gyro hardware detected. You can enable gyro verification if needed.';
-      }
+      hint.textContent = available
+        ? 'Gyro hardware detected. Keep it still during startup calibration.'
+        : 'Gyro not detected on GPIO3/GPIO13. Saved settings are retained; the device will retry.';
     }
 
     async function refreshStatus() {
       try {
-        const response = await fetch('/status', { cache: 'no-store' });
+        const response = await fetch('/status', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
         const status = await response.json();
 
         $('modeValue').textContent = status.mode;
@@ -345,11 +332,13 @@ String buildSetupPage() {
           setStatus('Configuration failed. Returning to setup mode.', 'error');
         } else if (status.mode === 'ConnectedIdle') {
           setStatus('Connected to Wi-Fi. The viewer page is available at /.', 'success');
-        } else if (status.mode === 'Recording') {
+        } else if (status.recordingActive) {
           setStatus('Recording is active. Click the record button again to stop.', 'success');
         }
       } catch (error) {
         setStatus('Unable to fetch device status.', 'error');
+      } finally {
+        setTimeout(refreshStatus, 1000);
       }
     }
 
@@ -372,7 +361,7 @@ String buildSetupPage() {
     }
 
     async function saveAndConnect() {
-      const ssid = $('ssid').value.trim();
+      const ssid = $('ssid').value;
       const password = $('password').value;
       const gyroEnabled = $('gyroEnabled').checked ? '1' : '0';
       const validationRoute = $('validationRoute').value.trim();
@@ -422,7 +411,6 @@ String buildSetupPage() {
           $('ssid').value = '';
           $('password').value = '';
           setStatus('Saved Wi-Fi credentials cleared.', 'success');
-          refreshStatus();
         } else {
           setStatus('Failed to clear saved Wi-Fi credentials.', 'error');
         }
@@ -431,7 +419,6 @@ String buildSetupPage() {
       }
     }
 
-    setInterval(refreshStatus, 1000);
     refreshStatus();
     scanNetworks();
   </script>
@@ -514,6 +501,8 @@ String buildViewerPage() {
       line-height: 1.5;
     }
     .stream-wrap {
+      position: relative;
+      aspect-ratio: 3 / 4;
       border-radius: 16px;
       overflow: hidden;
       background: #020617;
@@ -521,9 +510,12 @@ String buildViewerPage() {
     }
     img {
       display: block;
+      position: absolute;
+      left: 50%;
+      top: 50%;
       width: 100%;
-      height: auto;
-      aspect-ratio: 4 / 3;
+      height: 100%;
+      transform: translate(-50%, -50%);
       object-fit: contain;
       background: #020617;
     }
@@ -563,19 +555,25 @@ String buildViewerPage() {
   <div class="shell">
     <div class="card">
       <h1>Camera Feed</h1>
-      <p>The live viewer runs here when Wi-Fi is connected. Recording disables the stream until the record button is clicked again.</p>
+      <p>Live preview and SD recording can run together at <span id="captureResolution">the camera resolution</span>, targeting 20 FPS. Use the physical button to start or stop recording.</p>
     </div>
 
     <div class="grid">
       <div class="card">
         <div id="streamStatus" class="status">Waiting for status...</div>
         <div id="streamWrap" class="stream-wrap">
-          <img id="streamImage" src="/stream" alt="Live MJPEG stream" />
+          <img id="streamImage" alt="Live MJPEG stream" />
         </div>
       </div>
 
       <div class="card">
         <div class="meta">
+          <div class="meta-row"><label class="meta-label" for="rotation">Preview rotation</label><select id="rotation">
+            <option value="0">0° — portrait</option><option value="90">90° clockwise</option>
+            <option value="-90">90° counterclockwise</option><option value="180">180°</option>
+          </select><p>Quarter turns display as <span id="landscapeResolution">landscape video</span>. Use the same rotation when exporting recordings.</p></div>
+          <div class="meta-row"><span class="meta-label">Performance</span><span id="performanceValue">Waiting...</span></div>
+          <div class="meta-row"><span class="meta-label">Device message</span><span id="errorValue">None</span></div>
           <div class="meta-row"><span class="meta-label">Host</span><span>esp32.local</span></div>
           <div class="meta-row"><span class="meta-label">Station IP</span><span id="stationIpValue">-</span></div>
           <div class="meta-row"><span class="meta-label">Recording</span><span id="recordingValue">Idle</span></div>
@@ -591,41 +589,86 @@ String buildViewerPage() {
     const streamWrap = document.getElementById('streamWrap');
     const streamImage = document.getElementById('streamImage');
 
+    const rotationControl = document.getElementById('rotation');
+    let nextStreamAttempt = 0;
+    let lastPreviewFrames = -1;
+    let lastPreviewProgress = Date.now();
+    let activeStreamUrl = '';
+
+    function applyRotation(value) {
+      const angle = [0, 90, -90, 180].includes(Number(value)) ? Number(value) : 0;
+      rotationControl.value = String(angle);
+      const quarterTurn = Math.abs(angle) === 90;
+      streamWrap.style.aspectRatio = quarterTurn ? '4 / 3' : '3 / 4';
+      streamImage.style.width = quarterTurn ? '75%' : '100%';
+      streamImage.style.height = quarterTurn ? '133.333333%' : '100%';
+      streamImage.style.transform = 'translate(-50%, -50%) rotate(' + angle + 'deg)';
+      try { localStorage.setItem('cameraPortraitRotation', String(angle)); } catch (_) {}
+    }
+    let savedRotation = '0';
+    try { savedRotation = localStorage.getItem('cameraPortraitRotation') ?? '0'; } catch (_) {}
+    applyRotation(savedRotation);
+    rotationControl.addEventListener('change', () => applyRotation(rotationControl.value));
+
+    function resetStream() {
+      streamImage.removeAttribute('src');
+      nextStreamAttempt = Date.now() + 2000;
+      activeStreamUrl = '';
+    }
+    streamImage.addEventListener('error', resetStream);
+
     function updateStreamAvailability(available, recordingActive) {
-      if (available && !recordingActive) {
+      if (available) {
         streamWrap.classList.remove('hidden');
-        if (!streamImage.src.includes('/stream')) {
-          streamImage.src = '/stream?ts=' + Date.now();
+        if (!activeStreamUrl && Date.now() >= nextStreamAttempt) {
+          const url = new URL('/stream', window.location.href);
+          url.port = '81';
+          url.searchParams.set('ts', Date.now());
+          activeStreamUrl = url.href;
+          streamImage.src = activeStreamUrl;
+          lastPreviewProgress = Date.now();
         }
-        statusNode.textContent = 'Camera stream is live.';
+        statusNode.textContent = recordingActive
+          ? 'Preview and recording are active.' : 'Live preview enabled.';
         return;
       }
-
       streamWrap.classList.add('hidden');
-      streamImage.src = '';
+      resetStream();
       statusNode.textContent = recordingActive
-        ? 'Recording is active. Live streaming resumes when the record button is clicked again.'
-        : 'The MJPEG stream is currently unavailable.';
+        ? 'Recording continues on the SD card. Preview needs Wi-Fi.'
+        : 'The camera preview is currently unavailable.';
     }
 
     async function refreshStatus() {
       try {
-        const response = await fetch('/status', { cache: 'no-store' });
+        const response = await fetch('/status', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
         const status = await response.json();
 
         document.getElementById('stationIpValue').textContent = status.stationIp || '-';
+        document.getElementById('captureResolution').textContent = status.width + ' × ' + status.height;
+        document.getElementById('landscapeResolution').textContent = status.height + ' × ' + status.width;
         document.getElementById('recordingValue').textContent = status.recordingActive
-          ? ('Writing to ' + (status.recordingDirectory || 'session'))
+          ? ((status.recordingStopping ? 'Finishing ' : 'Writing to ') + (status.recordingDirectory || 'session'))
           : 'Idle';
         document.getElementById('timeValue').textContent = status.timeSynced ? 'Synced' : 'Not synced';
 
+        document.getElementById('performanceValue').textContent =
+          status.recordedFrames + ' saved · ' + status.droppedFrames + ' dropped · slowest SD write ' + status.maxWriteMs + ' ms';
+        document.getElementById('errorValue').textContent = status.mediaError || status.lastErrorMessage || status.gyroError || 'None';
+        if (status.previewFrames !== lastPreviewFrames) {
+          lastPreviewFrames = status.previewFrames;
+          lastPreviewProgress = Date.now();
+        } else if (activeStreamUrl && Date.now() - lastPreviewProgress > 15000) {
+          resetStream();
+        }
         updateStreamAvailability(status.streamAvailable, status.recordingActive);
       } catch (error) {
-        statusNode.textContent = 'Unable to fetch current device status.';
+        statusNode.textContent = 'Unable to fetch current device status. Reconnecting...';
+      } finally {
+        setTimeout(refreshStatus, 1000);
       }
     }
 
-    setInterval(refreshStatus, 1000);
     refreshStatus();
   </script>
 </body>
@@ -684,12 +727,17 @@ void handleConnect() {
   String email = server.arg("email");
   String authPassword = server.arg("authPassword");
 
-  ssid.trim();
   validationRoute.trim();
   email.trim();
   gyroEnabledArg.toLowerCase();
 
   bool requestedGyroEnabled = (gyroEnabledArg == "1" || gyroEnabledArg == "true" || gyroEnabledArg == "on");
+
+  if (ssid.length() > 32 || password.length() > 64 || validationRoute.length() > 512 ||
+      email.length() > 254 || authPassword.length() > 256) {
+    sendJson("{\"success\":false,\"error\":\"Configuration field exceeds its length limit\"}");
+    return;
+  }
 
   if (ssid.length() == 0) {
     sendJson("{\"success\":false,\"error\":\"SSID is required\"}");
@@ -698,11 +746,6 @@ void handleConnect() {
 
   if (requestedGyroEnabled && validationRoute.length() == 0) {
     sendJson("{\"success\":false,\"error\":\"Validation route is required when gyro is enabled\"}");
-    return;
-  }
-
-  if (requestedGyroEnabled && !gyroHardwareAvailable()) {
-    sendJson("{\"success\":false,\"error\":\"Gyro hardware is not available on GPIO3/GPIO13\"}");
     return;
   }
 
@@ -723,20 +766,116 @@ void handleConnect() {
   request.email = email;
   request.authPassword = authPassword;
 
-  if (!startConnectionAttempt(request)) {
-    sendJson("{\"success\":false,\"error\":\"Unable to start the Wi-Fi connection attempt\"}");
-    return;
-  }
-
   sendJson("{\"success\":true,\"saved\":false,\"wifiConnected\":false,\"gyroReady\":false,\"recordingReady\":false,\"enteredSoftAp\":false,\"applying\":true,\"lastErrorType\":\"none\",\"lastErrorMessage\":\"\"}");
+  startConnectionAttempt(request);
 }
 
 void handleForget() {
   clearCredentials();
   clearConnectionError();
-  startConfigMode();
   sendJson("{\"success\":true}");
+  startConfigMode();
 }
+
+// Use the SDK's streaming raw-body path, before its normal form parser allocates
+// the entire Content-Length. Only our small URL-encoded configuration is accepted.
+class BoundedPostHandler : public RequestHandler {
+ public:
+  bool canHandle(HTTPMethod method, String uri) override {
+    return method == HTTP_POST || method == HTTP_PUT || method == HTTP_PATCH || method == HTTP_DELETE;
+  }
+  bool canRaw(String uri) override { return true; }
+  void raw(WebServer& web, String uri, HTTPRaw& request) override {
+    if (request.status == RAW_START) {
+      body = "";
+      complete = false;
+      startedAt = millis();
+      rejected = false;
+      expected = 0;
+      const String length = web.header("Content-Length");
+      for (size_t i = 0; i < length.length(); ++i) {
+        if (length[i] < '0' || length[i] > '9' || expected > kBodyLimit / 10) {
+          reject(web, 413, "Request is too large or has an invalid length");
+          return;
+        }
+        expected = expected * 10 + length[i] - '0';
+      }
+      if (expected > kBodyLimit) {
+        reject(web, 413, "Request body limit is 4096 bytes");
+        return;
+      }
+      String type = web.header("Content-Type");
+      if (expected && !type.startsWith("application/x-www-form-urlencoded")) {
+        reject(web, 415, "Use URL-encoded form data");
+        return;
+      }
+      // The SDK otherwise reads a full 1436-byte block even for a tiny body.
+      // Read only Content-Length bytes here, with one deadline for the request.
+      server.markRawBodyConsumed();
+      if (expected && !body.reserve(expected)) {
+        reject(web, 503, "Not enough memory for configuration");
+        return;
+      }
+      WiFiClient input = web.client();
+      while (body.length() < expected) {
+        if (millis() - startedAt >= 4000 || (!input.connected() && !input.available())) {
+          reject(web, 408, "Configuration request timed out or was incomplete");
+          return;
+        }
+        if (input.available()) {
+          const int value = input.read();
+          if (value >= 0 && !body.concat(static_cast<char>(value))) {
+            reject(web, 503, "Not enough memory for configuration");
+            return;
+          }
+        } else {
+          delay(1);
+        }
+      }
+    } else if (request.status == RAW_END) {
+      complete = !rejected && body.length() == expected;
+    } else if (request.status == RAW_ABORTED) {
+      body = "";
+      complete = false;
+    }
+  }
+  bool handle(WebServer& web, HTTPMethod method, String uri) override {
+    if (!complete || (expected && !web.header("Content-Type").startsWith("application/x-www-form-urlencoded"))) {
+      web.send(400, "text/plain", "Incomplete or unsupported request body");
+    } else if (method != HTTP_POST || (uri != "/connect" && uri != "/forget")) {
+      web.send(404, "text/plain", "Not found");
+    } else {
+      // Bound the SDK argument-array allocation as well as body bytes.
+      size_t fields = 1;
+      for (size_t i = 0; i < body.length(); ++i) if (body[i] == '&') ++fields;
+      if (fields > 8) {
+        web.send(400, "text/plain", "Too many configuration fields");
+      } else {
+        server.parseBoundedForm(body);
+        if (uri == "/connect") handleConnect();
+        else handleForget();
+      }
+    }
+    body = "";
+    complete = false;
+    return true;
+  }
+ private:
+  static constexpr size_t kBodyLimit = 4096;
+  String body;
+  size_t expected = 0;
+  uint32_t startedAt = 0;
+  bool complete = false;
+  bool rejected = false;
+  void reject(WebServer& web, int code, const char* message) {
+    rejected = true;
+    server.markRawBodyConsumed();
+    web.send(code, "text/plain", message);
+    web.client().stop();
+    body = "";
+    complete = false;
+  }
+};
 
 void handleCaptivePortalRedirect() {
   server.sendHeader("Location", "/setup");
@@ -759,14 +898,15 @@ void handleNotFound() {
 }  // namespace
 
 void registerRoutes() {
+  const char* requestHeaders[] = {"Content-Length", "Content-Type"};
+  server.collectHeaders(requestHeaders, 2);
+  server.addHandler(new BoundedPostHandler());
   server.on("/", HTTP_GET, handleRoot);
   server.on("/setup", HTTP_GET, handleSetup);
   server.on("/setup/", HTTP_GET, handleSetup);
   server.on("/stream", HTTP_GET, handleStream);
   server.on("/status", HTTP_GET, handleStatus);
   server.on("/scan", HTTP_GET, handleScan);
-  server.on("/connect", HTTP_POST, handleConnect);
-  server.on("/forget", HTTP_POST, handleForget);
   server.on("/generate_204", HTTP_GET, handleCaptivePortalRedirect);
   server.on("/gen_204", HTTP_GET, handleCaptivePortalRedirect);
   server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortalRedirect);

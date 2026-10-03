@@ -1,6 +1,497 @@
 #include "app_shared.h"
+#include <esp_heap_caps.h>
+#include <esp_http_server.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace {
+constexpr size_t kFrameSlots = 6;
+constexpr size_t kFrameCapacity = 160 * 1024;
+constexpr size_t kRecordingQueueDepth = 2;
+constexpr size_t kSdWriteBufferSize = 8 * 1024;
+constexpr int kCapturePreviewCore = 1;
+constexpr int kSdWriterCore = 0;
+constexpr uint16_t kPreviewPort = 81;
+constexpr uint8_t kJpegQuality = 12;
+// OV3660's YUV422 JPEG encoder truncates incomplete 16-pixel MCU columns.
+// Capture the final MCU in full; the JPEG header can hide its unused edge.
+constexpr uint16_t kOv3660JpegWidth = ((kCameraWidth + 15) / 16) * 16;
+
+struct Frame {
+  uint8_t* data = nullptr;
+  size_t length = 0;
+  uint32_t capturedAt = 0;
+  uint32_t sequence = 0;
+  uint8_t references = 0;
+};
+
+Frame sFrames[kFrameSlots];
+Frame* sLatest = nullptr;
+SemaphoreHandle_t sMutex = nullptr;
+QueueHandle_t sRecordQueue = nullptr;
+TaskHandle_t sCaptureTask = nullptr;
+TaskHandle_t sWriterTask = nullptr;
+uint8_t* sSdWriteBuffer = nullptr;  // Internal DMA memory; owned by the SD worker.
+httpd_handle_t sPreviewServer = nullptr;
+MediaStatus sStatus;
+bool sPreviewEnabled = false;
+bool sAcceptRecording = false;
+uint32_t sPreviewGeneration = 0;
+uint32_t sRecordingStartedAt = 0;
+char sRecordingDirectory[96] = {};
+uint16_t sSensorCaptureWidth = kCameraWidth;
+
+class MediaLock {
+ public:
+  MediaLock() { xSemaphoreTake(sMutex, portMAX_DELAY); }
+  ~MediaLock() { xSemaphoreGive(sMutex); }
+  MediaLock(const MediaLock&) = delete;
+  MediaLock& operator=(const MediaLock&) = delete;
+};
+
+void releaseFrame(Frame* frame) {
+  if (frame) {
+    MediaLock lock;
+    configASSERT(frame->references > 0);
+    --frame->references;
+  }
+}
+
+Frame* reserveFrame() {
+  MediaLock lock;
+  for (Frame& frame : sFrames) {
+    if (frame.references == 0) {
+      frame.references = 1;  // The producer owns the slot until publication.
+      return &frame;
+    }
+  }
+  if (sAcceptRecording) ++sStatus.recordingDropped;
+  return nullptr;
+}
+
+void failRecording(MediaError error) {
+  MediaLock lock;
+  if (sStatus.recording) {
+    if (sStatus.error == MediaError::None) sStatus.error = error;
+    sAcceptRecording = false;
+    sStatus.stopping = true;
+  }
+}
+
+void publishFrame(Frame* frame) {
+  MediaLock lock;
+  frame->sequence = ++sStatus.capturedFrames;
+  if (sPreviewEnabled) {
+    if (sLatest) --sLatest->references;
+    sLatest = frame;
+    ++frame->references;
+  }
+  // Enqueue and stop share the mutex. I/O and blocking queue operations never
+  // run in this lock. A frame captured before this session must not enter it.
+  if (sAcceptRecording && static_cast<int32_t>(frame->capturedAt - sRecordingStartedAt) >= 0) {
+    ++frame->references;
+    if (xQueueSend(sRecordQueue, &frame, 0) != pdTRUE) {
+      --frame->references;
+      ++sStatus.recordingDropped;
+    }
+  }
+  --frame->references;  // Release the producer's reference.
+}
+
+bool preparePortraitJpeg(camera_fb_t& frame) {
+  // fb->width/height still describe the SDK buffer preset after set_res_raw.
+  // Read the baseline JPEG's own SOF header; never relabel landscape pixels.
+  uint8_t* data = frame.buf;
+  if (!data || frame.len < 4 || data[0] != 0xff || data[1] != 0xd8) return false;
+  size_t offset = 2;
+  while (offset < frame.len) {
+    if (data[offset++] != 0xff) return false;
+    while (offset < frame.len && data[offset] == 0xff) ++offset;
+    if (offset == frame.len) return false;
+    const uint8_t marker = data[offset++];
+    if (marker == 0xda || marker == 0xd9 || marker == 0 || marker == 0xd8) return false;
+    if (marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (frame.len - offset < 2) return false;
+    const size_t length = (static_cast<size_t>(data[offset]) << 8) | data[offset + 1];
+    if (length < 2 || length > frame.len - offset) return false;
+    if (marker == 0xc0) {
+      if (length < 8 || data[offset + 2] != 8) return false;
+      const uint8_t components = data[offset + 7];
+      if ((components != 1 && components != 3) || length != 8 + 3 * components) return false;
+      const uint16_t height = (data[offset + 3] << 8) | data[offset + 4];
+      const uint16_t width = (data[offset + 5] << 8) | data[offset + 6];
+      if (width != sSensorCaptureWidth || height != kCameraHeight) return false;
+      if (width != kCameraWidth) {
+        // Only trim the OV3660's known 4:2:2 format. Both 608 and 600 need
+        // 38 MCUs per row, so compressed blocks and their order stay intact.
+        if (components != 3 || data[offset + 9] != 0x21 ||
+            data[offset + 12] != 0x11 || data[offset + 15] != 0x11 ||
+            (width + 15) / 16 != (kCameraWidth + 15) / 16) return false;
+        data[offset + 5] = kCameraWidth >> 8;
+        data[offset + 6] = kCameraWidth & 0xff;
+      }
+      return true;
+    }
+    offset += length;
+  }
+  return false;
+}
+
+bool configurePortraitSensor() {
+  sensor_t* sensor = esp_camera_sensor_get();
+  if (!sensor) {
+    Serial.println("Camera driver did not expose a sensor");
+    return false;
+  }
+  Serial.printf("Camera sensor PID: 0x%04x\n", static_cast<unsigned>(sensor->id.PID));
+  if (!sensor->set_res_raw || !sensor->set_quality) {
+    Serial.println("Camera driver does not support a custom JPEG window");
+    return false;
+  }
+  int result = -1;
+  switch (sensor->id.PID) {
+    case OV2640_PID:
+      Serial.println("Configuring OV2640 native portrait capture");
+      sSensorCaptureWidth = kCameraWidth;
+      // For OV2640, startX selects the sensor mode: 0 = UXGA. Centre a
+      // 900 x 1200 DSP window and scale by 2/3, preserving proportions.
+      result = sensor->set_res_raw(sensor, 0, 0, 0, 0, 350, 0, 900, 1200,
+                                   kCameraWidth, kCameraHeight, true, false);
+      break;
+    case OV3660_PID:
+      Serial.println("Configuring OV3660 native portrait capture");
+      sSensorCaptureWidth = kOv3660JpegWidth;
+      // OV3660 takes actual start/end coordinates, including its 16/6-pixel
+      // border on each side. Centre a 1168 x 1536 active window in 2048 x 1536.
+      // Use the SDK's square/portrait line timings, scaling without binning:
+      // half-height binning would leave only 768 rows for an 800-row output.
+      // Encode 608 x 800 with full MCU columns, then hide eight edge pixels.
+      result = sensor->set_res_raw(sensor, 440, 0, 1639, 1547, 16, 6, 2044, 1564,
+                                   sSensorCaptureWidth, kCameraHeight, true, false);
+      break;
+    default:
+      Serial.println("Native portrait capture is configured for OV2640 and OV3660 sensors");
+      return false;
+  }
+  if (result != 0 || sensor->set_quality(sensor, kJpegQuality) != 0) {
+    Serial.println("Unable to configure the native portrait sensor window");
+    return false;
+  }
+  // The driver started before the window changed. Discard queued old frames
+  // and confirm the actual encoded dimensions before starting either worker.
+  for (uint8_t attempt = 0; attempt < 4; ++attempt) {
+    camera_fb_t* frame = esp_camera_fb_get();
+    const bool valid = frame && frame->format == PIXFORMAT_JPEG && preparePortraitJpeg(*frame);
+    if (frame) esp_camera_fb_return(frame);
+    if (valid) return true;
+  }
+  Serial.printf("Camera did not produce %u x %u JPEG frames\n", kCameraWidth, kCameraHeight);
+  return false;
+}
+
+void captureTask(void*) {
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  uint32_t consecutiveErrors = 0;
+  TickType_t lastWake = xTaskGetTickCount();
+  const TickType_t interval = pdMS_TO_TICKS(kRecordingFrameIntervalMs);
+  for (;;) {
+    bool needed;
+    {
+      MediaLock lock;
+      needed = sAcceptRecording || (sPreviewEnabled && sStatus.previewClient);
+      if (!needed && sLatest) {
+        --sLatest->references;
+        sLatest = nullptr;
+      }
+    }
+    if (!needed) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      lastWake = xTaskGetTickCount();
+      continue;
+    }
+
+    Frame* frame = reserveFrame();
+    if (frame) {
+      camera_fb_t* fb = esp_camera_fb_get();
+      const bool oversized = fb && fb->format == PIXFORMAT_JPEG && fb->len > kFrameCapacity;
+      if (!fb || fb->format != PIXFORMAT_JPEG || oversized || !preparePortraitJpeg(*fb)) {
+        if (fb) esp_camera_fb_return(fb);
+        releaseFrame(frame);
+        {
+          MediaLock lock;
+          if (oversized) ++sStatus.oversizedFrames;
+          else ++sStatus.captureErrors;
+          if (sAcceptRecording) ++sStatus.recordingDropped;
+        }
+        if (++consecutiveErrors >= 3) failRecording(MediaError::CameraCapture);
+      } else {
+        consecutiveErrors = 0;
+        frame->length = fb->len;
+        frame->capturedAt = millis();
+        memcpy(frame->data, fb->buf, frame->length);
+        esp_camera_fb_return(fb);  // No further access to the driver buffer.
+        publishFrame(frame);
+      }
+    }
+    const TickType_t now = xTaskGetTickCount();
+    if (now - lastWake >= interval) {
+      lastWake = now;
+      vTaskDelay(1);  // No catch-up bursts after a slow camera operation.
+    } else {
+      vTaskDelayUntil(&lastWake, interval);
+    }
+  }
+}
+
+int openRecordingFile(const char* path) {
+  char absolutePath[160];
+  const int length = snprintf(absolutePath, sizeof(absolutePath), "/sdcard%s", path);
+  if (length <= 0 || static_cast<size_t>(length) >= sizeof(absolutePath)) return -1;
+  return ::open(absolutePath, O_WRONLY | O_CREAT | O_EXCL, 0666);
+}
+
+bool writeRecordingFrame(const Frame& frame, int index, uint32_t number,
+                         uint32_t startedAt, const char* directory) {
+  char path[128];
+  snprintf(path, sizeof(path), "%s/%06lu.jpg", directory,
+           static_cast<unsigned long>(number));
+  // Bypass stdio buffering: its buffer can be in PSRAM even when the source
+  // is DMA-capable. The SD driver can send several sectors per DMA transfer
+  // only when the pointer passed through FatFS is in aligned internal RAM.
+  const int file = openRecordingFile(path);
+  if (file < 0) {
+    failRecording(MediaError::StorageWrite);
+    return false;
+  }
+  bool complete = true;
+  for (size_t offset = 0; offset < frame.length; ) {
+    const size_t remaining = frame.length - offset;
+    const size_t count = remaining < kSdWriteBufferSize ? remaining : kSdWriteBufferSize;
+    memcpy(sSdWriteBuffer, frame.data + offset, count);
+    if (::write(file, sSdWriteBuffer, count) != static_cast<ssize_t>(count)) {
+      complete = false;
+      break;
+    }
+    offset += count;
+    if (offset < frame.length) vTaskDelay(1);
+  }
+  const int closeResult = ::close(file);
+  if (!complete || closeResult != 0) {
+    SD_MMC.remove(path);
+    failRecording(MediaError::StorageWrite);
+    return false;
+  }
+  char line[96];
+  const int length = snprintf(line, sizeof(line), "%06lu.jpg,%lu,%u\n",
+      static_cast<unsigned long>(number),
+      static_cast<unsigned long>(frame.capturedAt - startedAt),
+      static_cast<unsigned>(frame.length));
+  if (length <= 0 || static_cast<size_t>(length) >= sizeof(line) ||
+      ::write(index, line, length) != static_cast<ssize_t>(length)) {
+    failRecording(MediaError::MetadataWrite);
+    return false;
+  }
+  return true;
+}
+
+void writerTask(void*) {
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  int index = -1;
+  bool sessionOpen = false;
+  char directory[sizeof(sRecordingDirectory)] = {};
+  uint32_t startedAt = 0;
+  uint32_t nextFrame = 1;
+  uint32_t lastFlushAt = 0;
+  for (;;) {
+    bool active;
+    {
+      MediaLock lock;
+      active = sStatus.recording;
+      if (active && !sessionOpen) {
+        memcpy(directory, sRecordingDirectory, sizeof(directory));
+        startedAt = sRecordingStartedAt;
+      }
+    }
+    if (!active) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    if (!sessionOpen) {
+      char path[128];
+      snprintf(path, sizeof(path), "%s/frames.csv", directory);
+      index = openRecordingFile(path);
+      const char header[] = "file,elapsed_ms,bytes\n";
+      if (index < 0 || ::write(index, header, sizeof(header) - 1) != static_cast<ssize_t>(sizeof(header) - 1)) {
+        failRecording(MediaError::MetadataWrite);
+      }
+      sessionOpen = true;
+      nextFrame = 1;
+      lastFlushAt = millis();
+    }
+
+    Frame* frame = nullptr;
+    if (xQueueReceive(sRecordQueue, &frame, pdMS_TO_TICKS(20)) == pdTRUE) {
+      bool healthy;
+      {
+        MediaLock lock;
+        healthy = sStatus.error == MediaError::None;
+      }
+      const uint32_t writeStart = millis();
+      if (healthy && writeRecordingFrame(*frame, index, nextFrame, startedAt, directory)) {
+        ++nextFrame;
+        MediaLock lock;
+        ++sStatus.recordedFrames;
+        const uint32_t elapsed = millis() - writeStart;
+        if (elapsed > sStatus.maxWriteMs) sStatus.maxWriteMs = elapsed;
+      } else {
+        MediaLock lock;
+        ++sStatus.recordingDropped;
+      }
+      releaseFrame(frame);
+    }
+    if (index >= 0 && millis() - lastFlushAt >= 1000) {
+      if (::fsync(index) != 0) failRecording(MediaError::MetadataWrite);
+      lastFlushAt = millis();
+    }
+    bool finished;
+    {
+      MediaLock lock;
+      finished = !sAcceptRecording && uxQueueMessagesWaiting(sRecordQueue) == 0;
+    }
+    if (finished) {
+      if (index >= 0) {
+        if (::close(index) != 0) failRecording(MediaError::MetadataWrite);
+        index = -1;
+      }
+      sessionOpen = false;
+      MediaLock lock;
+      sStatus.recording = false;  // Completion is visible only after storage closes.
+      sStatus.stopping = false;
+    }
+  }
+}
+
+esp_err_t previewHandler(httpd_req_t* request) {
+  uint32_t generation = 0;
+  {
+    MediaLock lock;
+    if (sPreviewEnabled && !sStatus.previewClient) {
+      sStatus.previewClient = true;
+      generation = sPreviewGeneration;
+    }
+  }
+  if (generation == 0) {
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_send(request, "Preview unavailable", HTTPD_RESP_USE_STRLEN);
+  }
+
+  httpd_resp_set_type(request, "multipart/x-mixed-replace;boundary=frame");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  esp_err_t result = ESP_OK;
+  uint32_t lastSequence = 0;
+  uint32_t lastFrameAt = millis();
+  for (;;) {
+    Frame* frame = nullptr;
+    bool enabled;
+    {
+      MediaLock lock;
+      enabled = sPreviewEnabled && generation == sPreviewGeneration;
+      if (enabled && sLatest && sLatest->sequence != lastSequence) {
+        frame = sLatest;
+        ++frame->references;
+      }
+    }
+    if (!enabled || WiFi.status() != WL_CONNECTED) {
+      releaseFrame(frame);
+      break;
+    }
+    if (!frame) {
+      if (millis() - lastFrameAt > 3000) {
+        Serial.println("Preview stopped: no camera frame for 3 seconds");
+        result = ESP_FAIL;
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
+    }
+    lastSequence = frame->sequence;
+    lastFrameAt = millis();
+    char header[100];
+    const int length = snprintf(header, sizeof(header),
+        "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
+        static_cast<unsigned>(frame->length));
+    result = httpd_resp_send_chunk(request, header, length);
+    for (size_t offset = 0; result == ESP_OK && offset < frame->length; ) {
+      const size_t remaining = frame->length - offset;
+      const size_t count = remaining < 4096 ? remaining : 4096;
+      result = httpd_resp_send_chunk(request, reinterpret_cast<const char*>(frame->data + offset), count);
+      offset += count;
+    }
+    if (result == ESP_OK) result = httpd_resp_send_chunk(request, "\r\n", 2);
+    releaseFrame(frame);
+    if (result != ESP_OK) {
+      Serial.printf("Preview stopped: socket send failed (0x%x)\n", result);
+      break;
+    }
+    {
+      MediaLock lock;
+      ++sStatus.previewFrames;
+    }
+  }
+  {
+    MediaLock lock;
+    sStatus.previewClient = false;
+  }
+  return result == ESP_OK ? httpd_resp_send_chunk(request, nullptr, 0) : result;
+}
+
+void releasePipelineResources() {
+  // Only used before either worker is notified to start.
+  if (sCaptureTask) vTaskDelete(sCaptureTask);
+  if (sWriterTask) vTaskDelete(sWriterTask);
+  sCaptureTask = nullptr;
+  sWriterTask = nullptr;
+  if (sRecordQueue) vQueueDelete(sRecordQueue);
+  if (sMutex) vSemaphoreDelete(sMutex);
+  sRecordQueue = nullptr;
+  sMutex = nullptr;
+  heap_caps_free(sSdWriteBuffer);
+  sSdWriteBuffer = nullptr;
+  for (Frame& frame : sFrames) {
+    heap_caps_free(frame.data);
+    frame = Frame();
+  }
+}
+}  // namespace
 
 bool initCamera() {
+  if (cameraReady) return true;
+  if (!psramFound()) {
+    Serial.println("Camera requires working PSRAM for concurrent recording and preview");
+    return false;
+  }
+  sMutex = xSemaphoreCreateMutex();
+  sRecordQueue = xQueueCreate(kRecordingQueueDepth, sizeof(Frame*));
+  for (Frame& frame : sFrames) {
+    frame.data = static_cast<uint8_t*>(heap_caps_malloc(kFrameCapacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!frame.data || !sMutex || !sRecordQueue) {
+      Serial.println("Unable to allocate bounded camera buffers");
+      releasePipelineResources();
+      return false;
+    }
+  }
+  sSdWriteBuffer = static_cast<uint8_t*>(heap_caps_malloc(
+      kSdWriteBufferSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  if (!sSdWriteBuffer) {
+    Serial.println("Unable to allocate the SD DMA write buffer");
+    releasePipelineResources();
+    return false;
+  }
+
   camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -22,100 +513,124 @@ bool initCamera() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_SVGA;
-  config.jpeg_quality = 10;
-  config.fb_count = psramFound() ? 2 : 1;
-  config.fb_location = psramFound() ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
+  config.frame_size = kCameraBufferFrameSize;
+  config.jpeg_quality = kJpegQuality;
+  config.fb_count = 2;
+  config.fb_location = CAMERA_FB_IN_PSRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
 
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("Camera init failed: 0x%x\n", err);
-    cameraReady = false;
+  const esp_err_t error = esp_camera_init(&config);
+  if (error != ESP_OK) {
+    Serial.printf("Camera init failed: 0x%x\n", error);
+    releasePipelineResources();
     return false;
   }
-
-  sensor_t* sensor = esp_camera_sensor_get();
-  if (sensor) {
-    sensor->set_framesize(sensor, FRAMESIZE_SVGA);
-    sensor->set_quality(sensor, 10);
+  if (!configurePortraitSensor()) {
+    esp_camera_deinit();
+    releasePipelineResources();
+    return false;
   }
-
+  if (xTaskCreatePinnedToCore(captureTask, "camera-capture", 4096, nullptr, 2, &sCaptureTask, kCapturePreviewCore) != pdPASS ||
+      xTaskCreatePinnedToCore(writerTask, "sd-writer", 6144, nullptr, 1, &sWriterTask, kSdWriterCore) != pdPASS) {
+    releasePipelineResources();
+    esp_camera_deinit();
+    Serial.println("Unable to start media workers");
+    return false;
+  }
   cameraReady = true;
-  Serial.println("Camera initialized");
+  xTaskNotifyGive(sCaptureTask);
+  xTaskNotifyGive(sWriterTask);
+  Serial.printf("Camera ready: %u x %u JPEG, target 20 FPS, bounded PSRAM pipeline\n",
+                kCameraWidth, kCameraHeight);
+  Serial.println("Media workers: capture/preview core 1, SD writer core 0 with 8 KiB DMA staging");
   return true;
 }
 
+bool startPreviewServer() {
+  if (sPreviewServer) return true;
+  if (!cameraReady) return false;
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.core_id = kCapturePreviewCore;
+  config.server_port = kPreviewPort;
+  config.ctrl_port = 32769;
+  config.stack_size = 6144;
+  config.max_open_sockets = 2;
+  config.backlog_conn = 2;
+  config.recv_wait_timeout = 1;
+  // Bound a stalled socket, rather than cutting a JPEG off during successful
+  // writes. Slow viewers hold one slot and skip old frames; SD keeps running.
+  config.send_wait_timeout = 5;
+  if (httpd_start(&sPreviewServer, &config) != ESP_OK) {
+    sPreviewServer = nullptr;
+    return false;
+  }
+  httpd_uri_t uri = {};
+  uri.uri = "/stream";
+  uri.method = HTTP_GET;
+  uri.handler = previewHandler;
+  if (httpd_register_uri_handler(sPreviewServer, &uri) != ESP_OK) {
+    httpd_stop(sPreviewServer);
+    sPreviewServer = nullptr;
+    return false;
+  }
+  return true;
+}
+
+void setPreviewEnabled(bool enabled) {
+  if (!sMutex) return;
+  MediaLock lock;
+  if (sPreviewEnabled != enabled) {
+    sPreviewEnabled = enabled;
+    ++sPreviewGeneration;
+    if (sPreviewGeneration == 0) ++sPreviewGeneration;
+  }
+}
+
+bool beginMediaRecording(const String& directory) {
+  if (!cameraReady || directory.length() == 0 || directory.length() >= sizeof(sRecordingDirectory)) return false;
+  MediaLock lock;
+  if (sStatus.recording) return false;
+  directory.toCharArray(sRecordingDirectory, sizeof(sRecordingDirectory));
+  sRecordingStartedAt = millis();
+  sStatus.recordedFrames = 0;
+  sStatus.recordingDropped = 0;
+  sStatus.maxWriteMs = 0;
+  sStatus.error = MediaError::None;
+  sStatus.recording = true;
+  sStatus.stopping = false;
+  sAcceptRecording = true;
+  return true;
+}
+
+void endMediaRecording() {
+  if (!sMutex) return;
+  MediaLock lock;
+  sAcceptRecording = false;
+  sStatus.stopping = sStatus.recording;
+}
+
+MediaStatus mediaStatus() {
+  if (!sMutex) return MediaStatus();
+  MediaLock lock;
+  return sStatus;
+}
+
+const char* mediaErrorMessage(MediaError error) {
+  switch (error) {
+    case MediaError::CameraCapture: return "Camera repeatedly returned missing, invalid or oversized JPEGs";
+    case MediaError::StorageWrite: return "SD card could not write a complete JPEG; check space and card health";
+    case MediaError::MetadataWrite: return "SD card could not write recording timestamps";
+    default: return "";
+  }
+}
+
 void handleStream() {
-  if (!cameraReady) {
-    server.send(503, "text/plain", "Camera not initialized");
-    return;
-  }
-
   if (!streamAvailable()) {
-    if (runtimeMode == RuntimeMode::Recording) {
-      server.send(409, "text/plain", "Recording in progress");
-    } else {
-      server.send(503, "text/plain", "Live stream is currently unavailable");
-    }
+    server.send(503, "text/plain", "Preview requires a working camera and connected Wi-Fi");
     return;
   }
-
-  WiFiClient client = server.client();
-  client.setNoDelay(true);
-
-  static const char header[] =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-    "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-    "Pragma: no-cache\r\n"
-    "Connection: close\r\n\r\n";
-  client.write(reinterpret_cast<const uint8_t*>(header), sizeof(header) - 1);
-
-  streamClientActive = true;
-  streamStopRequested = false;
-  unsigned long lastFrameAt = 0;
-
-  while (client.connected()) {
-    processRuntimeDuringStream();
-    if (streamStopRequested || !streamAvailable()) {
-      break;
-    }
-
-    unsigned long now = millis();
-    if (now - lastFrameAt < kRecordingFrameIntervalMs) {
-      delay(1);
-      continue;
-    }
-
-    camera_fb_t* fb = esp_camera_fb_get();
-    if (!fb) {
-      Serial.println("Camera capture failed during streaming");
-      break;
-    }
-
-    if (fb->format != PIXFORMAT_JPEG) {
-      esp_camera_fb_return(fb);
-      break;
-    }
-
-    char partBuf[96];
-    size_t headerLen = snprintf(
-      partBuf,
-      sizeof(partBuf),
-      "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
-      static_cast<unsigned int>(fb->len)
-    );
-
-    client.write(reinterpret_cast<const uint8_t*>(partBuf), headerLen);
-    client.write(fb->buf, fb->len);
-    client.write(reinterpret_cast<const uint8_t*>("\r\n"), 2);
-
-    esp_camera_fb_return(fb);
-    lastFrameAt = now;
-  }
-
-  streamClientActive = false;
-  streamStopRequested = false;
-  client.stop();
+  const String location = "http://" + WiFi.localIP().toString() + ":" + String(kPreviewPort) + "/stream";
+  server.sendHeader("Location", location);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(307, "text/plain", "");
 }

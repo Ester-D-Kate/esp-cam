@@ -1,6 +1,12 @@
 #include "app_shared.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <cJSON.h>
+#include <memory>
+#include <new>
+
+// The pinned ESP-IDF build includes its full CA bundle in libmbedtls.
+extern const uint8_t kCertificateBundle[] asm("_binary_x509_crt_bundle_start");
 
 namespace {
 constexpr char kGyroEnabledKey[] = "gyro_enabled";
@@ -38,57 +44,121 @@ bool isValidValidationUrl(const String& input) {
   return input.startsWith("http://") || input.startsWith("https://");
 }
 
-bool extractJsonStringField(const String& json, const char* key, String& valueOut) {
-  valueOut = "";
-
-  String needle = String("\"") + key + "\"";
-  int keyIndex = json.indexOf(needle);
-  if (keyIndex < 0) {
-    return false;
+class BoundedResponse : public Stream {
+ public:
+  static constexpr size_t capacity = 4096;
+  char body[capacity + 1] = {};
+  size_t length = 0;
+  size_t write(uint8_t value) override { return write(&value, 1); }
+  size_t write(const uint8_t* data, size_t count) override {
+    if (count > capacity - length) return 0;
+    memcpy(body + length, data, count);
+    length += count;
+    body[length] = '\0';
+    return count;
   }
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+};
 
-  int colonIndex = json.indexOf(':', keyIndex + needle.length());
-  if (colonIndex < 0) {
-    return false;
+constexpr uint32_t kResponseDeadlineMs = 5000;
+
+int readResponseByte(WiFiClient& input, uint32_t startedAt) {
+  while (millis() - startedAt < kResponseDeadlineMs) {
+    if (input.available()) {
+      const int value = input.read();
+      if (value >= 0) return value;
+    } else if (!input.connected()) {
+      return -1;
+    }
+    delay(1);
   }
+  return -1;
+}
 
-  int firstQuoteIndex = json.indexOf('"', colonIndex + 1);
-  if (firstQuoteIndex < 0) {
-    return false;
+bool readBodyBytes(WiFiClient& input, BoundedResponse& response, size_t count, uint32_t startedAt) {
+  if (count > response.capacity - response.length) return false;
+  for (size_t i = 0; i < count; ++i) {
+    const int value = readResponseByte(input, startedAt);
+    if (value < 0) return false;
+    response.write(static_cast<uint8_t>(value));
   }
+  return true;
+}
 
-  String value;
-  bool escaped = false;
-  for (size_t i = static_cast<size_t>(firstQuoteIndex + 1); i < json.length(); ++i) {
-    char c = json[i];
-
-    if (escaped) {
-      switch (c) {
-        case 'n': value += '\n'; break;
-        case 'r': value += '\r'; break;
-        case 't': value += '\t'; break;
-        case '"': value += '"'; break;
-        case '\\': value += '\\'; break;
-        default: value += c; break;
+bool readValidationBody(HTTPClient& http, BoundedResponse& response) {
+  WiFiClient* input = http.getStreamPtr();
+  if (!input) return false;
+  const uint32_t startedAt = millis();
+  String encoding = http.header("Transfer-Encoding");
+  encoding.trim();
+  encoding.toLowerCase();
+  if (encoding == "chunked") {
+    for (;;) {
+      char line[96];
+      size_t length = 0;
+      for (;;) {
+        const int value = readResponseByte(*input, startedAt);
+        if (value < 0) return false;
+        if (value == '\r') {
+          if (readResponseByte(*input, startedAt) != '\n') return false;
+          break;
+        }
+        if (length >= sizeof(line) - 1) return false;
+        line[length++] = static_cast<char>(value);
       }
-      escaped = false;
-      continue;
+      line[length] = '\0';
+      size_t count = 0, digits = 0;
+      for (const char* digit = line; *digit && *digit != ';'; ++digit) {
+        int value = (*digit >= '0' && *digit <= '9') ? *digit - '0'
+                  : (*digit >= 'a' && *digit <= 'f') ? *digit - 'a' + 10
+                  : (*digit >= 'A' && *digit <= 'F') ? *digit - 'A' + 10 : -1;
+        if (value < 0 || count > response.capacity / 16) return false;
+        count = count * 16 + value;
+        ++digits;
+      }
+      if (!digits) return false;
+      if (count == 0) return true;  // Caller closes HTTP; trailers are not needed.
+      if (!readBodyBytes(*input, response, count, startedAt) ||
+          readResponseByte(*input, startedAt) != '\r' ||
+          readResponseByte(*input, startedAt) != '\n') return false;
     }
-
-    if (c == '\\') {
-      escaped = true;
-      continue;
-    }
-
-    if (c == '"') {
-      valueOut = value;
-      return true;
-    }
-
-    value += c;
   }
+  if (encoding.length() != 0 && encoding != "identity") return false;
+  const int expected = http.getSize();
+  if (expected >= 0) return readBodyBytes(*input, response, expected, startedAt);
+  // HTTP/1.0 and connection-close responses without a Content-Length.
+  for (;;) {
+    const int value = readResponseByte(*input, startedAt);
+    if (value < 0) return millis() - startedAt < kResponseDeadlineMs && !input->connected();
+    if (response.write(static_cast<uint8_t>(value)) != 1) return false;
+  }
+}
 
-  return false;
+bool jsonDepthSafe(const char* text) {
+  int depth = 0;
+  bool quoted = false, escaped = false;
+  for (; *text; ++text) {
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (*text == '\\') escaped = true;
+      else if (*text == '"') quoted = false;
+    } else if (*text == '"') quoted = true;
+    else if (*text == '{' || *text == '[') { if (++depth > 8) return false; }
+    else if (*text == '}' || *text == ']') { if (--depth < 0) return false; }
+  }
+  return !quoted && depth == 0;
+}
+
+bool validIdentity(const char* value) {
+  if (!value || !*value || strlen(value) > 128) return false;
+  for (; *value; ++value) {
+    const unsigned char c = *value;
+    if (!isalnum(c) && c != '-' && c != '_' && c != '.') return false;
+  }
+  return true;
 }
 
 bool requestGyroIdentity(
@@ -116,39 +186,67 @@ bool requestGyroIdentity(
   WiFiClient* transportClient = &plainClient;
 
   if (validationUrl.startsWith("https://")) {
-    secureClient.setInsecure();
+    if (!isTimeKnown()) {
+      errorOut = "Clock is not synced yet; retry gyro validation after NTP sync";
+      return false;
+    }
+    secureClient.setCACertBundle(kCertificateBundle);
+    secureClient.setHandshakeTimeout(5);
     transportClient = &secureClient;
   }
 
   HTTPClient http;
+  http.setConnectTimeout(3000);
+  http.setTimeout(3000);
+  http.setReuse(false);
   if (!http.begin(*transportClient, validationUrl)) {
     errorOut = "Unable to start validation request";
     http.end();
     return false;
   }
 
+  const char* responseHeaders[] = {"Transfer-Encoding"};
+  http.collectHeaders(responseHeaders, 1);
   http.addHeader("Content-Type", "application/json");
   String requestBody = "{\"email\":\"" + escapeJson(email) + "\",\"password\":\"" + escapeJson(password) + "\"}";
 
-  int code = http.POST(requestBody);
-  String responseBody = http.getString();
-  http.end();
-
-  if (code != 200 && code != 201) {
-    errorOut = "Validation failed (HTTP " + String(code) + ")";
+  std::unique_ptr<BoundedResponse> response(new (std::nothrow) BoundedResponse());
+  if (!response) {
+    errorOut = "Not enough memory for validation response";
+    http.end();
     return false;
   }
-
+  const int code = http.POST(requestBody);
+  if (code != 200 && code != 201) {
+    errorOut = "Validation failed (HTTP " + String(code) + ")";
+    http.end();
+    return false;
+  }
+  if (!readValidationBody(http, *response)) {
+    errorOut = "Validation response is too large, incomplete or timed out";
+    http.end();
+    return false;
+  }
+  http.end();
+  if (!jsonDepthSafe(response->body)) {
+    errorOut = "Validation response contains invalid or deeply nested JSON";
+    return false;
+  }
+  cJSON* document = cJSON_ParseWithOpts(response->body, nullptr, true);
   const char* keys[] = {"hashed_uuid", "uuid", "identity", "deviceId", "id"};
-  for (size_t i = 0; i < (sizeof(keys) / sizeof(keys[0])); ++i) {
-    String candidate;
-    if (extractJsonStringField(responseBody, keys[i], candidate) && candidate.length() > 0) {
-      uuidOut = candidate;
-      return true;
+  const cJSON* objects[] = {document, cJSON_GetObjectItemCaseSensitive(document, "data")};
+  for (const cJSON* object : objects) {
+    for (const char* key : keys) {
+      const cJSON* value = cJSON_GetObjectItemCaseSensitive(object, key);
+      if (cJSON_IsString(value) && validIdentity(value->valuestring)) {
+        uuidOut = value->valuestring;
+        cJSON_Delete(document);
+        return true;
+      }
     }
   }
-
-  errorOut = "Validation succeeded but UUID was not found in response";
+  cJSON_Delete(document);
+  errorOut = "Validation response does not contain a valid UUID string";
   return false;
 }
 }  // namespace
@@ -177,11 +275,11 @@ bool isGyroToggleEnabled() {
   return sGyroEnabled;
 }
 
-String getGyroValidationRoute() {
+const String& getGyroValidationRoute() {
   return sGyroRoute;
 }
 
-String getGyroIdentityUuid() {
+const String& getGyroIdentityUuid() {
   return sGyroUuid;
 }
 
@@ -196,9 +294,9 @@ void setGyroRuntimeSettings(bool enabled, const String& validationRoute, const S
 
 void saveGyroSettings(bool enabled, const String& validationRoute, const String& identityUuid) {
   setGyroRuntimeSettings(enabled, validationRoute, identityUuid);
-  preferences.putBool(kGyroEnabledKey, sGyroEnabled);
-  preferences.putString(kGyroRouteKey, sGyroRoute);
-  preferences.putString(kGyroUuidKey, sGyroUuid);
+  if (preferences.getBool(kGyroEnabledKey, false) != sGyroEnabled) preferences.putBool(kGyroEnabledKey, sGyroEnabled);
+  if (preferences.getString(kGyroRouteKey, "") != sGyroRoute) preferences.putString(kGyroRouteKey, sGyroRoute);
+  if (preferences.getString(kGyroUuidKey, "") != sGyroUuid) preferences.putString(kGyroUuidKey, sGyroUuid);
 }
 
 bool prepareGyroConfiguration(
@@ -225,11 +323,6 @@ bool prepareGyroConfiguration(
   if (!requestedEnable) {
     messageOut = "Gyro/authentication disabled";
     return true;
-  }
-
-  if (!gyroHardwareAvailable()) {
-    messageOut = "Gyro hardware is not available on GPIO3/GPIO13";
-    return false;
   }
 
   if (routeOut.length() == 0) {

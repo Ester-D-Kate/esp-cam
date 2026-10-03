@@ -11,7 +11,7 @@ const unsigned long kStatusHoldMs = 15000;
 const unsigned long kErrorHoldMs = 3000;
 const unsigned long kFastBlinkIntervalMs = 100;
 const unsigned long kSlowBlinkIntervalMs = 500;
-const unsigned long kRecordingFrameIntervalMs = 33;
+const unsigned long kRecordingFrameIntervalMs = 50;
 const unsigned long kButtonDebounceMs = 50;
 // User-requested 1-bit SD wiring plan:
 // - LED on GPIO4
@@ -22,7 +22,7 @@ const uint8_t kRecordButtonPin = 12;
 const IPAddress kApIp(192, 168, 4, 1);
 const IPAddress kApSubnet(255, 255, 255, 0);
 
-WebServer server(80);
+AppWebServer server(80);
 DNSServer dnsServer;
 Preferences preferences;
 
@@ -33,14 +33,11 @@ bool httpServerStarted = false;
 bool sdReady = false;
 bool timeSyncStarted = false;
 bool timeSynced = false;
-bool streamClientActive = false;
-bool streamStopRequested = false;
 
 RuntimeMode runtimeMode = RuntimeMode::SoftApConfig;
 PendingConnectionRequest pendingConnection;
 RecordingSession recordingSession;
 ScanState scanState;
-SlaveState slaveState;
 unsigned long runtimeModeStartedAt = 0;
 bool startApWhenErrorWindowEnds = false;
 String savedSsidCache;
@@ -58,309 +55,8 @@ constexpr long kLocalUtcOffsetSeconds = 19800;  // Asia/Calcutta (UTC+05:30)
 ErrorType sLastErrorType = ErrorType::None;
 String sLastErrorMessage;
 RuntimeMode sErrorReturnMode = RuntimeMode::SoftApConfig;
-
-File sRecordingAviFile;
-File sRecordingIndexFile;
-String sRecordingAviPath;
-String sRecordingIndexPath;
-uint32_t sAviWidth = 0;
-uint32_t sAviHeight = 0;
-uint32_t sAviMaxFrameSize = 0;
-uint32_t sAviRiffSizeOffset = 0;
-uint32_t sAviMoviSizeOffset = 0;
-uint32_t sAviAvihFramesOffset = 0;
-uint32_t sAviAvihBytesPerSecondOffset = 0;
-uint32_t sAviAvihSuggestedBufferOffset = 0;
-uint32_t sAviStrhFramesOffset = 0;
-uint32_t sAviStrhSuggestedBufferOffset = 0;
-uint32_t sAviStrfImageSizeOffset = 0;
-uint32_t sAviMoviDataStart = 0;
-
-constexpr uint32_t kAviFramesPerSecond = 23;
-constexpr uint32_t kAviMicrosecondsPerFrame = 1000000UL / kAviFramesPerSecond;
-
-bool writeLe16(File& file, uint16_t value) {
-  uint8_t bytes[2] = {
-    static_cast<uint8_t>(value & 0xFF),
-    static_cast<uint8_t>((value >> 8) & 0xFF)
-  };
-  return file.write(bytes, sizeof(bytes)) == sizeof(bytes);
-}
-
-bool writeLe32(File& file, uint32_t value) {
-  uint8_t bytes[4] = {
-    static_cast<uint8_t>(value & 0xFF),
-    static_cast<uint8_t>((value >> 8) & 0xFF),
-    static_cast<uint8_t>((value >> 16) & 0xFF),
-    static_cast<uint8_t>((value >> 24) & 0xFF)
-  };
-  return file.write(bytes, sizeof(bytes)) == sizeof(bytes);
-}
-
-bool writeFourCc(File& file, const char* fourCc) {
-  return file.write(reinterpret_cast<const uint8_t*>(fourCc), 4) == 4;
-}
-
-bool patchLe32(File& file, uint32_t offset, uint32_t value) {
-  const size_t currentPosition = file.position();
-  if (!file.seek(offset)) {
-    return false;
-  }
-
-  const bool ok = writeLe32(file, value);
-  return file.seek(currentPosition) && ok;
-}
-
-void closeRecordingFiles() {
-  if (sRecordingAviFile) {
-    sRecordingAviFile.close();
-  }
-  if (sRecordingIndexFile) {
-    sRecordingIndexFile.close();
-  }
-}
-
-void resetAviRecordingState() {
-  closeRecordingFiles();
-  sRecordingAviPath = "";
-  sRecordingIndexPath = "";
-  sAviWidth = 0;
-  sAviHeight = 0;
-  sAviMaxFrameSize = 0;
-  sAviRiffSizeOffset = 0;
-  sAviMoviSizeOffset = 0;
-  sAviAvihFramesOffset = 0;
-  sAviAvihBytesPerSecondOffset = 0;
-  sAviAvihSuggestedBufferOffset = 0;
-  sAviStrhFramesOffset = 0;
-  sAviStrhSuggestedBufferOffset = 0;
-  sAviStrfImageSizeOffset = 0;
-  sAviMoviDataStart = 0;
-}
-
-bool writeAviHeader(uint32_t width, uint32_t height) {
-  sAviWidth = width;
-  sAviHeight = height;
-  sAviRiffSizeOffset = 4;
-
-  if (!writeFourCc(sRecordingAviFile, "RIFF") ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeFourCc(sRecordingAviFile, "AVI ") ||
-      !writeFourCc(sRecordingAviFile, "LIST") ||
-      !writeLe32(sRecordingAviFile, 192) ||
-      !writeFourCc(sRecordingAviFile, "hdrl") ||
-      !writeFourCc(sRecordingAviFile, "avih") ||
-      !writeLe32(sRecordingAviFile, 56) ||
-      !writeLe32(sRecordingAviFile, kAviMicrosecondsPerFrame)) {
-    return false;
-  }
-
-  sAviAvihBytesPerSecondOffset = static_cast<uint32_t>(sRecordingAviFile.position());
-  if (!writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0x10)) {
-    return false;
-  }
-
-  sAviAvihFramesOffset = static_cast<uint32_t>(sRecordingAviFile.position());
-  sAviAvihSuggestedBufferOffset = sAviAvihFramesOffset + 12;
-
-  if (!writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 1) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, width) ||
-      !writeLe32(sRecordingAviFile, height) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeFourCc(sRecordingAviFile, "LIST") ||
-      !writeLe32(sRecordingAviFile, 116) ||
-      !writeFourCc(sRecordingAviFile, "strl") ||
-      !writeFourCc(sRecordingAviFile, "strh") ||
-      !writeLe32(sRecordingAviFile, 56) ||
-      !writeFourCc(sRecordingAviFile, "vids") ||
-      !writeFourCc(sRecordingAviFile, "MJPG") ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe16(sRecordingAviFile, 0) ||
-      !writeLe16(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 1) ||
-      !writeLe32(sRecordingAviFile, kAviFramesPerSecond) ||
-      !writeLe32(sRecordingAviFile, 0)) {
-    return false;
-  }
-
-  sAviStrhFramesOffset = static_cast<uint32_t>(sRecordingAviFile.position());
-  sAviStrhSuggestedBufferOffset = sAviStrhFramesOffset + 4;
-
-  if (!writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0xFFFFFFFF) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe16(sRecordingAviFile, 0) ||
-      !writeLe16(sRecordingAviFile, 0) ||
-      !writeLe16(sRecordingAviFile, static_cast<uint16_t>(width)) ||
-      !writeLe16(sRecordingAviFile, static_cast<uint16_t>(height)) ||
-      !writeFourCc(sRecordingAviFile, "strf") ||
-      !writeLe32(sRecordingAviFile, 40) ||
-      !writeLe32(sRecordingAviFile, 40) ||
-      !writeLe32(sRecordingAviFile, width) ||
-      !writeLe32(sRecordingAviFile, height) ||
-      !writeLe16(sRecordingAviFile, 1) ||
-      !writeLe16(sRecordingAviFile, 24) ||
-      !writeFourCc(sRecordingAviFile, "MJPG")) {
-    return false;
-  }
-
-  sAviStrfImageSizeOffset = static_cast<uint32_t>(sRecordingAviFile.position());
-  if (!writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeLe32(sRecordingAviFile, 0) ||
-      !writeFourCc(sRecordingAviFile, "LIST")) {
-    return false;
-  }
-
-  sAviMoviSizeOffset = static_cast<uint32_t>(sRecordingAviFile.position());
-  if (!writeLe32(sRecordingAviFile, 0) ||
-      !writeFourCc(sRecordingAviFile, "movi")) {
-    return false;
-  }
-
-  sAviMoviDataStart = static_cast<uint32_t>(sRecordingAviFile.position());
-  return true;
-}
-
-bool beginAviRecordingFromFrame(const camera_fb_t* fb) {
-  resetAviRecordingState();
-
-  sRecordingAviPath = recordingSession.directory + "/recording.avi";
-  sRecordingIndexPath = recordingSession.directory + "/recording.idx";
-
-  sRecordingAviFile = SD_MMC.open(sRecordingAviPath.c_str(), FILE_WRITE);
-  if (!sRecordingAviFile) {
-    persistConnectionError(ErrorType::Recording, "Unable to open the AVI output file on the SD card");
-    resetAviRecordingState();
-    return false;
-  }
-
-  sRecordingIndexFile = SD_MMC.open(sRecordingIndexPath.c_str(), FILE_WRITE);
-  if (!sRecordingIndexFile) {
-    persistConnectionError(ErrorType::Recording, "Unable to open the AVI index file on the SD card");
-    resetAviRecordingState();
-    SD_MMC.remove(sRecordingAviPath.c_str());
-    return false;
-  }
-
-  if (!writeAviHeader(static_cast<uint32_t>(fb->width), static_cast<uint32_t>(fb->height))) {
-    persistConnectionError(ErrorType::Recording, "Unable to write the AVI file header");
-    resetAviRecordingState();
-    SD_MMC.remove(sRecordingAviPath.c_str());
-    SD_MMC.remove(sRecordingIndexPath.c_str());
-    return false;
-  }
-
-  return true;
-}
-
-bool appendAviFrame(const camera_fb_t* fb) {
-  if (!sRecordingAviFile && !beginAviRecordingFromFrame(fb)) {
-    return false;
-  }
-
-  const uint32_t frameLength = static_cast<uint32_t>(fb->len);
-  const uint8_t paddingByte = 0;
-  const uint32_t chunkOffset = static_cast<uint32_t>(sRecordingAviFile.position()) - sAviMoviDataStart + 4;
-
-  if (!writeFourCc(sRecordingAviFile, "00dc") ||
-      !writeLe32(sRecordingAviFile, frameLength) ||
-      sRecordingAviFile.write(fb->buf, fb->len) != fb->len ||
-      ((frameLength & 1U) != 0 && sRecordingAviFile.write(&paddingByte, 1) != 1)) {
-    persistConnectionError(ErrorType::Recording, "Unable to append a video frame to the AVI file");
-    return false;
-  }
-
-  if (!writeFourCc(sRecordingIndexFile, "00dc") ||
-      !writeLe32(sRecordingIndexFile, 0x10) ||
-      !writeLe32(sRecordingIndexFile, chunkOffset) ||
-      !writeLe32(sRecordingIndexFile, frameLength)) {
-    persistConnectionError(ErrorType::Recording, "Unable to append the AVI frame index");
-    return false;
-  }
-
-  if (frameLength > sAviMaxFrameSize) {
-    sAviMaxFrameSize = frameLength;
-  }
-
-  recordingSession.nextFrameNumber += 1;
-  return true;
-}
-
-bool finalizeAviRecording() {
-  if (!sRecordingAviFile) {
-    resetAviRecordingState();
-    return true;
-  }
-
-  const uint32_t frameCount = recordingSession.nextFrameNumber;
-  const uint32_t moviEnd = static_cast<uint32_t>(sRecordingAviFile.position());
-  const uint32_t moviSize = moviEnd - (sAviMoviSizeOffset + 4);
-
-  if (!sRecordingIndexFile.seek(0)) {
-    persistConnectionError(ErrorType::Recording, "Unable to rewind the AVI index file");
-    resetAviRecordingState();
-    return false;
-  }
-
-  const uint32_t indexSize = static_cast<uint32_t>(sRecordingIndexFile.size());
-  if (!writeFourCc(sRecordingAviFile, "idx1") || !writeLe32(sRecordingAviFile, indexSize)) {
-    persistConnectionError(ErrorType::Recording, "Unable to start the AVI index chunk");
-    resetAviRecordingState();
-    return false;
-  }
-
-  uint8_t buffer[512];
-  while (true) {
-    const size_t bytesRead = sRecordingIndexFile.read(buffer, sizeof(buffer));
-    if (bytesRead == 0) {
-      break;
-    }
-    if (sRecordingAviFile.write(buffer, bytesRead) != bytesRead) {
-      persistConnectionError(ErrorType::Recording, "Unable to finish the AVI index chunk");
-      resetAviRecordingState();
-      return false;
-    }
-  }
-
-  const uint32_t finalFileSize = static_cast<uint32_t>(sRecordingAviFile.position());
-  const uint32_t bytesPerSecond = sAviMaxFrameSize * kAviFramesPerSecond;
-
-  const bool patched =
-    patchLe32(sRecordingAviFile, sAviRiffSizeOffset, finalFileSize - 8) &&
-    patchLe32(sRecordingAviFile, sAviMoviSizeOffset, moviSize) &&
-    patchLe32(sRecordingAviFile, sAviAvihFramesOffset, frameCount) &&
-    patchLe32(sRecordingAviFile, sAviAvihBytesPerSecondOffset, bytesPerSecond) &&
-    patchLe32(sRecordingAviFile, sAviAvihSuggestedBufferOffset, sAviMaxFrameSize) &&
-    patchLe32(sRecordingAviFile, sAviStrhFramesOffset, frameCount) &&
-    patchLe32(sRecordingAviFile, sAviStrhSuggestedBufferOffset, sAviMaxFrameSize) &&
-    patchLe32(sRecordingAviFile, sAviStrfImageSizeOffset, sAviMaxFrameSize);
-
-  if (!patched) {
-    persistConnectionError(ErrorType::Recording, "Unable to finalize the AVI metadata");
-    resetAviRecordingState();
-    return false;
-  }
-
-  closeRecordingFiles();
-  if (sRecordingIndexPath.length() > 0) {
-    SD_MMC.remove(sRecordingIndexPath.c_str());
-  }
-  resetAviRecordingState();
-  return true;
-}
+bool sPreviewServerReady = false;
+uint32_t sLastReconnectAttempt = 0;
 
 void removePreferenceKeyIfPresent(const char* key) {
   if (preferences.isKey(key)) {
@@ -445,7 +141,7 @@ void updateLedOutput() {
 
   bool ledOn = false;
 
-  if (runtimeMode == RuntimeMode::Recording || runtimeMode == RuntimeMode::PostConnectValidation) {
+  if (recordingSession.active || runtimeMode == RuntimeMode::PostConnectValidation) {
     ledOn = true;
   } else if (runtimeMode == RuntimeMode::WifiConnecting) {
     ledOn = ((millis() / kSlowBlinkIntervalMs) % 2) == 0;
@@ -457,8 +153,6 @@ void updateLedOutput() {
 }
 
 void updateRecordButtonState() {
-  recordingSession.pressedEdge = false;
-
   if (!recordButtonPinUsable()) {
     return;
   }
@@ -479,25 +173,16 @@ void updateRecordButtonState() {
   }
 
   recordingSession.stablePressed = physicalPressed;
-  recordingSession.pressedEdge = recordingSession.stablePressed;
-
-  if (recordingSession.pressedEdge) {
+  if (recordingSession.stablePressed) {
     Serial.println("Record button click detected (debounced)");
     recordingSession.clickPending = true;
-    recordingSession.clickHandled = false;
   }
 
-  if (recordingSession.pressedEdge && streamClientActive) {
-    requestStreamStop();
-  }
 }
 
 bool recordingCanStartNow() {
-  if (!recordButtonPinUsable() || !cameraReady || !sdReady || streamClientActive) {
-    return false;
-  }
-
-  return runtimeMode == RuntimeMode::SoftApConfig || runtimeMode == RuntimeMode::ConnectedIdle;
+  return recordButtonPinUsable() && cameraReady && sdReady &&
+         !recordingSession.active && !mediaStatus().recording;
 }
 
 String formatTimestampDirectory() {
@@ -535,13 +220,15 @@ String formatTimestampDirectory() {
 }
 
 String buildNumericRecordingDirectory() {
-  for (uint32_t index = 1; index < 1000000UL; ++index) {
-    String candidate = "/recordings/" + String(index);
+  uint32_t next = preferences.getULong("rec_next", 1);
+  for (unsigned attempt = 0; attempt < 1000; ++attempt) {
+    if (next == 0) next = 1;
+    String candidate = "/recordings/" + String(next++);
     if (!SD_MMC.exists(candidate.c_str())) {
+      preferences.putULong("rec_next", next);
       return candidate;
     }
   }
-
   return "";
 }
 
@@ -549,7 +236,8 @@ bool ensureRecordingsRoot() {
   if (!SD_MMC.exists("/recordings")) {
     return SD_MMC.mkdir("/recordings");
   }
-  return true;
+  File directory = SD_MMC.open("/recordings");
+  return directory && directory.isDirectory();
 }
 
 bool prepareAndCommitConnection() {
@@ -563,46 +251,18 @@ bool prepareAndCommitConnection() {
   String gyroMessage;
   bool uuidUpdated = false;
 
-  if (!prepareGyroConfiguration(
-        pendingConnection.gyroEnabled,
-        pendingConnection.validationRoute,
-        pendingConnection.email,
-        pendingConnection.authPassword,
-        candidateEnabled,
-        candidateRoute,
-        candidateUuid,
-        gyroMessage,
-        uuidUpdated
-      )) {
-    enterErrorFallback(ErrorType::Gyro, gyroMessage, pendingConnection.keepAccessPoint, RuntimeMode::SoftApConfig);
-    return false;
-  }
-
-  bool previousEnabled = isGyroToggleEnabled();
-  String previousRoute = getGyroValidationRoute();
-  String previousUuid = getGyroIdentityUuid();
-
-  setGyroRuntimeSettings(candidateEnabled, candidateRoute, candidateUuid);
-
-  if (candidateEnabled) {
-    if (!gyroValidateRuntime(gyroMessage)) {
-      setGyroRuntimeSettings(previousEnabled, previousRoute, previousUuid);
-      if (previousEnabled) {
-        gyroBeginIfEligible();
-      } else {
-        gyroStop();
-      }
-      enterErrorFallback(ErrorType::Gyro, gyroMessage, pendingConnection.keepAccessPoint, RuntimeMode::SoftApConfig);
-      return false;
-    }
-  } else {
-    gyroStop();
-  }
-
+  // Wi-Fi and the camera remain usable even if optional gyro authentication fails.
+  const bool gyroConfigured = prepareGyroConfiguration(
+      pendingConnection.gyroEnabled, pendingConnection.validationRoute,
+      pendingConnection.email, pendingConnection.authPassword,
+      candidateEnabled, candidateRoute, candidateUuid, gyroMessage, uuidUpdated);
   saveCredentials(pendingConnection.ssid, pendingConnection.password);
-  saveGyroSettings(candidateEnabled, candidateRoute, candidateUuid);
-
-  clearConnectionError();
+  if (gyroConfigured) {
+    saveGyroSettings(candidateEnabled, candidateRoute, candidateUuid);
+    clearConnectionError();
+  } else {
+    persistConnectionError(ErrorType::Gyro, gyroMessage);
+  }
   pendingConnection = PendingConnectionRequest();
   beginSuccessWindow();
   return true;
@@ -620,7 +280,15 @@ String escapeJson(const String& input) {
       case '\n': output += "\\n"; break;
       case '\r': output += "\\r"; break;
       case '\t': output += "\\t"; break;
-      default: output += c; break;
+      default:
+        if (static_cast<uint8_t>(c) < 0x20) {
+          char escaped[7];
+          snprintf(escaped, sizeof(escaped), "\\u%04x", static_cast<unsigned char>(c));
+          output += escaped;
+        } else {
+          output += c;
+        }
+        break;
     }
   }
   return output;
@@ -649,7 +317,6 @@ String runtimeModeText() {
     case RuntimeMode::WifiConnecting: return "WifiConnecting";
     case RuntimeMode::PostConnectValidation: return "PostConnectValidation";
     case RuntimeMode::ConnectedIdle: return "ConnectedIdle";
-    case RuntimeMode::Recording: return "Recording";
     case RuntimeMode::ErrorFallback: return "ErrorFallback";
   }
   return "Unknown";
@@ -722,19 +389,14 @@ void startConfigMode() {
     startAccessPoint();
   }
 
-  if (runtimeMode == RuntimeMode::Recording) {
-    stopRecordingSession("Switching to configuration mode");
-  }
+  requestStreamStop();
+  WiFi.disconnect(false, false);
 
   gyroStop();
   enterRuntimeMode(RuntimeMode::SoftApConfig);
 }
 
 void enterErrorFallback(ErrorType type, const String& message, bool startApNow, RuntimeMode returnMode) {
-  if (runtimeMode == RuntimeMode::Recording) {
-    stopRecordingSession("Error fallback");
-  }
-
   Serial.print("Error fallback [");
   Serial.print(errorTypeText(type));
   Serial.print("]: ");
@@ -743,7 +405,7 @@ void enterErrorFallback(ErrorType type, const String& message, bool startApNow, 
   persistConnectionError(type, message);
   pendingConnection = PendingConnectionRequest();
   gyroStop();
-  streamStopRequested = true;
+  requestStreamStop();
   sErrorReturnMode = returnMode;
 
   bool shouldReturnToSoftAp = (returnMode == RuntimeMode::SoftApConfig);
@@ -769,18 +431,15 @@ bool startConnectionAttempt(const PendingConnectionRequest& request) {
     return false;
   }
 
-  if (runtimeMode == RuntimeMode::Recording) {
-    stopRecordingSession("Applying network settings");
-  }
-
+  sLastReconnectAttempt = millis();
   pendingConnection = request;
   pendingConnection.active = true;
   stopMdnsService();
   gyroStop();
-  streamStopRequested = true;
+  requestStreamStop();
 
   WiFi.setHostname(kMdnsHost);
-  WiFi.setAutoReconnect(true);
+  WiFi.setAutoReconnect(false);  // Reconnect explicitly with a bounded retry interval.
 
   if (pendingConnection.keepAccessPoint) {
     startAccessPoint();
@@ -809,6 +468,7 @@ bool startConnectionAttempt(const PendingConnectionRequest& request) {
 void beginSuccessWindow() {
   applyConnectedRadioTuning();
   startHttpServerIfNeeded();
+  sPreviewServerReady = startPreviewServer();
   startMdnsServiceIfNeeded();
   syncClockIfNeeded();
   enterRuntimeMode(RuntimeMode::PostConnectValidation);
@@ -821,12 +481,7 @@ void transitionToConnectedIdle() {
 
   startMdnsServiceIfNeeded();
   syncClockIfNeeded();
-  gyroBeginIfEligible();
   enterRuntimeMode(RuntimeMode::ConnectedIdle);
-}
-
-RuntimeMode localFeatureErrorReturnMode() {
-  return WiFi.status() == WL_CONNECTED ? RuntimeMode::ConnectedIdle : RuntimeMode::SoftApConfig;
 }
 
 void startHttpServerIfNeeded() {
@@ -861,8 +516,8 @@ bool loadCredentials(String& ssid, String& password) {
 }
 
 void saveCredentials(const String& ssid, const String& password) {
-  preferences.putString(kSsidKey, ssid);
-  preferences.putString(kPasswordKey, password);
+  if (preferences.getString(kSsidKey, "") != ssid) preferences.putString(kSsidKey, ssid);
+  if (preferences.getString(kPasswordKey, "") != password) preferences.putString(kPasswordKey, password);
   removePreferenceKeyIfPresent(kLegacyPasswordKey);
   savedSsidCache = ssid;
   savedPasswordCache = password;
@@ -886,6 +541,7 @@ void loadConnectionError() {
 }
 
 void persistConnectionError(ErrorType type, const String& message) {
+  if (sLastErrorType == type && sLastErrorMessage == message) return;
   sLastErrorType = type;
   sLastErrorMessage = message;
   preferences.putString(kErrorTypeKey, errorTypeText(type));
@@ -942,6 +598,8 @@ void syncClockIfNeeded() {
 }
 
 bool initStorage() {
+  if (mediaStatus().recording) return false;
+  SD_MMC.end();
   sdReady = SD_MMC.begin("/sdcard", true);
   if (!sdReady) {
     Serial.println("SD_MMC mount failed");
@@ -951,12 +609,14 @@ bool initStorage() {
   if (SD_MMC.cardType() == CARD_NONE) {
     Serial.println("No SD card detected");
     sdReady = false;
+    SD_MMC.end();
     return false;
   }
 
   if (!ensureRecordingsRoot()) {
     Serial.println("Unable to create /recordings directory");
     sdReady = false;
+    SD_MMC.end();
     return false;
   }
 
@@ -996,71 +656,26 @@ bool startRecordingSession() {
     return false;
   }
 
+  if (!beginMediaRecording(directory)) {
+    SD_MMC.rmdir(directory.c_str());
+    persistConnectionError(ErrorType::Recording, "Recording worker is unavailable or still stopping");
+    return false;
+  }
   recordingSession.directory = directory;
-  recordingSession.nextFrameNumber = 0;
-  recordingSession.lastFrameAt = 0;
-  recordingSession.modeBeforeRecording = runtimeMode;
   recordingSession.active = true;
-  resetAviRecordingState();
-
-  enterRuntimeMode(RuntimeMode::Recording);
-  Serial.print("AVI recording started in ");
-  Serial.println(recordingSession.directory);
+  recordingSession.stopping = false;
+  clearConnectionError();
+  Serial.print("Recording started in ");
+  Serial.println(directory);
   return true;
 }
 
 void stopRecordingSession(const String& reason) {
-  if (!recordingSession.active) {
-    return;
-  }
-
-  Serial.print("Recording stopped");
-  if (reason.length() > 0) {
-    Serial.print(": ");
-    Serial.print(reason);
-  }
-  Serial.println();
-
-  if (!finalizeAviRecording()) {
-    Serial.println("AVI finalization failed");
-  }
-
-  recordingSession.active = false;
-  recordingSession.lastFrameAt = 0;
-
-  if (runtimeMode == RuntimeMode::Recording) {
-    enterRuntimeMode(recordingSession.modeBeforeRecording);
-  }
-}
-
-bool appendRecordingFrame() {
-  if (!recordingSession.active || !cameraReady || !sdReady) {
-    return false;
-  }
-
-  unsigned long now = millis();
-  if (now - recordingSession.lastFrameAt < kRecordingFrameIntervalMs) {
-    return true;
-  }
-
-  camera_fb_t* fb = esp_camera_fb_get();
-  if (!fb || fb->format != PIXFORMAT_JPEG) {
-    if (fb) {
-      esp_camera_fb_return(fb);
-    }
-    persistConnectionError(ErrorType::Recording, "Camera capture failed during recording");
-    return false;
-  }
-
-  const bool appended = appendAviFrame(fb);
-  esp_camera_fb_return(fb);
-
-  if (!appended) {
-    return false;
-  }
-
-  recordingSession.lastFrameAt = now;
-  return true;
+  if (!recordingSession.active || recordingSession.stopping) return;
+  endMediaRecording();
+  recordingSession.stopping = true;
+  Serial.print("Finishing recording: ");
+  Serial.println(reason);
 }
 
 String currentRecordingDirectory() {
@@ -1068,7 +683,11 @@ String currentRecordingDirectory() {
 }
 
 bool scanNetworksAsync() {
-  if (scanState.inProgress) {
+  if (recordingSession.active || mediaStatus().previewClient) {
+    scanState.error = "Stop recording and close the preview before scanning Wi-Fi";
+    return false;
+  }
+  if (scanState.inProgress || (scanState.lastUpdatedAt != 0 && millis() - scanState.lastUpdatedAt < 10000)) {
     return true;
   }
 
@@ -1111,7 +730,8 @@ void processWifiScan() {
   }
 
   String json = "[";
-  for (int i = 0; i < result; ++i) {
+  json.reserve(2048);
+  for (int i = 0; i < result && i < 20; ++i) {
     if (i > 0) {
       json += ",";
     }
@@ -1131,15 +751,20 @@ void processWifiScan() {
 }
 
 bool streamAvailable() {
-  return cameraReady && runtimeMode == RuntimeMode::ConnectedIdle && WiFi.status() == WL_CONNECTED;
+  return cameraReady && sPreviewServerReady &&
+         (runtimeMode == RuntimeMode::ConnectedIdle || runtimeMode == RuntimeMode::PostConnectValidation) &&
+         WiFi.status() == WL_CONNECTED;
 }
 
 void requestStreamStop() {
-  streamStopRequested = true;
+  setPreviewEnabled(false);
 }
 
 String buildStatusJson() {
-  String json = "{";
+  const MediaStatus media = mediaStatus();
+  String json;
+  json.reserve(4096);
+  json = "{";
   json += "\"mode\":\"" + escapeJson(runtimeModeText()) + "\"";
   json += ",\"apActive\":";
   json += apActive ? "true" : "false";
@@ -1150,7 +775,24 @@ String buildStatusJson() {
   json += ",\"streamAvailable\":";
   json += streamAvailable() ? "true" : "false";
   json += ",\"recordingActive\":";
-  json += recordingSession.active ? "true" : "false";
+  json += media.recording ? "true" : "false";
+  json += ",\"recordingStopping\":";
+  json += media.stopping ? "true" : "false";
+  json += ",\"recordedFrames\":" + String(media.recordedFrames);
+  json += ",\"droppedFrames\":" + String(media.recordingDropped);
+  json += ",\"capturedFrames\":" + String(media.capturedFrames);
+  json += ",\"previewFrames\":" + String(media.previewFrames);
+  json += ",\"captureErrors\":" + String(media.captureErrors);
+  json += ",\"oversizedFrames\":" + String(media.oversizedFrames);
+  json += ",\"maxWriteMs\":" + String(media.maxWriteMs);
+  json += ",\"freeHeap\":" + String(ESP.getFreeHeap());
+  json += ",\"freePsram\":" + String(ESP.getFreePsram());
+  json += ",\"targetFps\":20,\"width\":" + String(kCameraWidth);
+  json += ",\"height\":" + String(kCameraHeight) + ",\"streamPort\":81";
+  json += ",\"mediaError\":\"" + escapeJson(mediaErrorMessage(media.error)) + "\"";
+  json += ",\"gyroMqttConnected\":";
+  json += gyroMqttConnected() ? "true" : "false";
+  json += ",\"gyroError\":\"" + escapeJson(gyroLastError()) + "\"";
   json += ",\"recordingDirectory\":\"" + escapeJson(currentRecordingDirectory()) + "\"";
   json += ",\"sdReady\":";
   json += sdReady ? "true" : "false";
@@ -1174,27 +816,6 @@ String buildStatusJson() {
   json += scanState.jsonCache;
   json += "}";
   return json;
-}
-
-void processRuntimeDuringStream() {
-  processWifiScan();
-  syncClockIfNeeded();
-  updateRecordButtonState();
-
-  if (recordingSession.stablePressed) {
-    requestStreamStop();
-  }
-
-  if (runtimeMode == RuntimeMode::ConnectedIdle) {
-    if (WiFi.status() != WL_CONNECTED) {
-      requestStreamStop();
-      enterErrorFallback(ErrorType::Disconnect, "Wi-Fi connection lost", true, RuntimeMode::SoftApConfig);
-    } else {
-      gyroLoop();
-    }
-  }
-
-  updateLedOutput();
 }
 
 void processRuntimeState() {
@@ -1233,21 +854,6 @@ void processRuntimeState() {
       }
       break;
 
-    case RuntimeMode::Recording:
-      if (recordingSession.modeBeforeRecording == RuntimeMode::ConnectedIdle && WiFi.status() != WL_CONNECTED) {
-        stopRecordingSession("Wi-Fi connection lost");
-        enterErrorFallback(ErrorType::Disconnect, "Wi-Fi connection lost during recording", true, RuntimeMode::SoftApConfig);
-      } else if (!appendRecordingFrame()) {
-        stopRecordingSession("Frame write failed");
-        enterErrorFallback(
-          lastConnectionErrorType() == ErrorType::None ? ErrorType::Recording : lastConnectionErrorType(),
-          lastConnectionErrorMessage().length() > 0 ? lastConnectionErrorMessage() : "Recording failed",
-          false,
-          localFeatureErrorReturnMode()
-        );
-      }
-      break;
-
     case RuntimeMode::ErrorFallback:
       if (millis() - runtimeModeStartedAt >= kErrorHoldMs) {
         if (sErrorReturnMode == RuntimeMode::SoftApConfig) {
@@ -1264,40 +870,44 @@ void processRuntimeState() {
       break;
 
     case RuntimeMode::SoftApConfig:
-    default:
+      if (savedSsidCache.length() > 0 && millis() - sLastReconnectAttempt >= 30000) {
+        PendingConnectionRequest retry;
+        retry.ssid = savedSsidCache;
+        retry.password = savedPasswordCache;
+        retry.keepAccessPoint = true;
+        retry.gyroEnabled = isGyroToggleEnabled();
+        retry.validationRoute = getGyroValidationRoute();
+        startConnectionAttempt(retry);
+      }
       break;
   }
 
-  if (recordingSession.clickPending && !recordingSession.clickHandled) {
-    RuntimeMode returnMode = localFeatureErrorReturnMode();
+  const MediaStatus media = mediaStatus();
+  if (recordingSession.active && !media.recording) {
+    recordingSession.active = false;
+    recordingSession.stopping = false;
+    Serial.println("Recording closed; SD files can now be removed safely after power-off");
+    if (media.error != MediaError::None) {
+      persistConnectionError(ErrorType::Recording, mediaErrorMessage(media.error));
+      if (media.error == MediaError::StorageWrite || media.error == MediaError::MetadataWrite) sdReady = false;
+    }
+  } else {
+    recordingSession.stopping = media.stopping;
+  }
 
+  if (recordingSession.clickPending) {
+    recordingSession.clickPending = false;
     if (recordingSession.active) {
-      recordingSession.clickPending = false;
-      recordingSession.clickHandled = true;
       stopRecordingSession("Button clicked");
     } else if (!cameraReady) {
-      recordingSession.clickPending = false;
-      recordingSession.clickHandled = true;
-      enterErrorFallback(ErrorType::Recording, "Camera unavailable for recording", false, returnMode);
-    } else if (!sdReady) {
-      recordingSession.clickPending = false;
-      recordingSession.clickHandled = true;
-      enterErrorFallback(ErrorType::SDCard, "SD card is not available for recording", false, returnMode);
-    } else if (streamClientActive) {
-      requestStreamStop();
+      persistConnectionError(ErrorType::Recording, "Camera unavailable for recording");
+    } else if (!sdReady && !initStorage()) {
+      persistConnectionError(ErrorType::SDCard, "SD card is not available for recording");
     } else if (recordingCanStartNow()) {
-      recordingSession.clickPending = false;
-      recordingSession.clickHandled = true;
-      if (!startRecordingSession()) {
-        enterErrorFallback(
-          lastConnectionErrorType() == ErrorType::None ? ErrorType::Recording : lastConnectionErrorType(),
-          lastConnectionErrorMessage().length() > 0 ? lastConnectionErrorMessage() : "Unable to start recording",
-          false,
-          returnMode
-        );
-      }
+      startRecordingSession();
     }
   }
 
+  setPreviewEnabled(streamAvailable());
   updateLedOutput();
 }

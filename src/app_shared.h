@@ -18,7 +18,6 @@ enum class RuntimeMode : uint8_t {
   WifiConnecting,
   PostConnectValidation,
   ConnectedIdle,
-  Recording,
   ErrorFallback
 };
 
@@ -47,13 +46,9 @@ struct RecordingSession {
   bool stablePressed = false;
   bool lastPhysicalPressed = false;
   bool clickPending = false;
-  bool clickHandled = false;
-  bool pressedEdge = false;
+  bool stopping = false;
   unsigned long lastDebounceAt = 0;
   String directory;
-  uint32_t nextFrameNumber = 1;
-  unsigned long lastFrameAt = 0;
-  RuntimeMode modeBeforeRecording = RuntimeMode::SoftApConfig;
 };
 
 struct ScanState {
@@ -63,26 +58,33 @@ struct ScanState {
   unsigned long lastUpdatedAt = 0;
 };
 
-struct SlaveState {
-  bool present = false;
-  bool helloReceived = false;
-  bool buttonClickPending = false;
-  bool configReady = false;
-  bool runtimeReady = false;
-  bool gyroPresent = false;
-  bool gyroReady = false;
-  bool wifiConnected = false;
-  bool mqttConnected = false;
-  bool configDirty = true;
-  bool runtimeDirty = true;
-  unsigned long syncNotBeforeAt = 0;
-  unsigned long lastSeenAt = 0;
-  unsigned long lastConfigSentAt = 0;
-  unsigned long lastRuntimeSentAt = 0;
-  String firmwareVersion;
-  String lastErrorType;
-  String lastErrorMessage;
+enum class MediaError : uint8_t {
+  None,
+  CameraCapture,
+  StorageWrite,
+  MetadataWrite
 };
+
+// Snapshots are copied under the media mutex; callers never touch worker state.
+struct MediaStatus {
+  bool recording = false;
+  bool stopping = false;
+  bool previewClient = false;
+  uint32_t capturedFrames = 0;
+  uint32_t recordedFrames = 0;
+  uint32_t recordingDropped = 0;
+  uint32_t previewFrames = 0;
+  uint32_t captureErrors = 0;
+  uint32_t oversizedFrames = 0;
+  uint32_t maxWriteMs = 0;
+  MediaError error = MediaError::None;
+};
+
+// The SDK allocates JPEG buffers by a preset's pixel count / 5. XGA reserves
+// about 154 KiB per buffer for detailed portrait JPEGs; output is set separately.
+constexpr framesize_t kCameraBufferFrameSize = FRAMESIZE_XGA;
+constexpr uint16_t kCameraWidth = 600;
+constexpr uint16_t kCameraHeight = 800;
 
 extern const char kAccessPointSsid[];
 extern const char kAccessPointPassword[];
@@ -101,7 +103,14 @@ extern const uint8_t kRecordButtonPin;
 extern const IPAddress kApIp;
 extern const IPAddress kApSubnet;
 
-extern WebServer server;
+class AppWebServer : public WebServer {
+ public:
+  using WebServer::WebServer;
+  void parseBoundedForm(const String& body) { _parseArguments(body); }
+  void markRawBodyConsumed() { _clientContentLength = 0; }
+};
+
+extern AppWebServer server;
 extern DNSServer dnsServer;
 extern Preferences preferences;
 
@@ -112,14 +121,11 @@ extern bool httpServerStarted;
 extern bool sdReady;
 extern bool timeSyncStarted;
 extern bool timeSynced;
-extern bool streamClientActive;
-extern bool streamStopRequested;
 
 extern RuntimeMode runtimeMode;
 extern PendingConnectionRequest pendingConnection;
 extern RecordingSession recordingSession;
 extern ScanState scanState;
-extern SlaveState slaveState;
 extern unsigned long runtimeModeStartedAt;
 extern bool startApWhenErrorWindowEnds;
 extern String savedSsidCache;
@@ -134,6 +140,12 @@ String lastConnectionErrorMessage();
 
 bool initCamera();
 void handleStream();
+bool startPreviewServer();
+void setPreviewEnabled(bool enabled);
+bool beginMediaRecording(const String& directory);
+void endMediaRecording();
+MediaStatus mediaStatus();
+const char* mediaErrorMessage(MediaError error);
 bool indicatorPinUsable();
 bool recordButtonPinUsable();
 
@@ -145,7 +157,6 @@ bool startConnectionAttempt(const PendingConnectionRequest& request);
 void beginSuccessWindow();
 void transitionToConnectedIdle();
 void processRuntimeState();
-void processRuntimeDuringStream();
 void startHttpServerIfNeeded();
 
 bool streamAvailable();
@@ -157,7 +168,6 @@ bool isTimeKnown();
 String buildNextRecordingDirectory();
 bool startRecordingSession();
 void stopRecordingSession(const String& reason = "");
-bool appendRecordingFrame();
 String currentRecordingDirectory();
 
 bool scanNetworksAsync();
@@ -174,18 +184,13 @@ void clearConnectionError();
 void startMdnsServiceIfNeeded();
 void stopMdnsService();
 void syncClockIfNeeded();
-void initSlaveLink();
-void processSlaveLink();
-void notifySlaveConfigChanged();
-void notifySlaveRuntimeChanged();
-String currentSlaveLedMode();
 
 void registerRoutes();
 
 void loadGyroSettings();
 bool isGyroToggleEnabled();
-String getGyroValidationRoute();
-String getGyroIdentityUuid();
+const String& getGyroValidationRoute();
+const String& getGyroIdentityUuid();
 void setGyroRuntimeSettings(bool enabled, const String& validationRoute, const String& identityUuid);
 void saveGyroSettings(bool enabled, const String& validationRoute, const String& identityUuid);
 bool prepareGyroConfiguration(
@@ -205,4 +210,6 @@ void gyroStop();
 bool gyroBeginIfEligible();
 bool gyroValidateRuntime(String& messageOut);
 bool gyroIsRunning();
+bool gyroMqttConnected();
+const char* gyroLastError();
 void gyroLoop();

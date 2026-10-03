@@ -1,5 +1,7 @@
 #include "app_shared.h"
-#include <PubSubClient.h>
+#include <mqtt_client.h>
+#include <esp_random.h>
+#include <atomic>
 #include <Wire.h>
 
 namespace {
@@ -10,6 +12,7 @@ constexpr uint8_t kRegWhoAmI = 0x75;
 constexpr uint8_t kRegGyroConfig = 0x1B;
 constexpr uint8_t kRegAccelConfig = 0x1C;
 
+// User-requested pin plan with SD_MMC switched to 1-bit mode.
 constexpr int kGyroSdaPin = 3;
 constexpr int kGyroSclPin = 13;
 
@@ -19,8 +22,12 @@ constexpr float kComplementaryAlpha = 0.98f;
 constexpr char kMqttBroker[] = "broker.hivemq.com";
 constexpr uint16_t kMqttPort = 1883;
 
-WiFiClient sMqttNetClient;
-PubSubClient sMqttClient(sMqttNetClient);
+esp_mqtt_client_handle_t sMqttClient = nullptr;
+std::atomic<bool> sMqttConnected{false};
+String sLastError;
+uint32_t sLastProbeAt = 0;
+uint32_t sLastInitAttempt = 0;
+bool sInitAttempted = false;
 
 bool sImuReady = false;
 bool sGyroRunning = false;
@@ -37,7 +44,6 @@ float sRoll = 0.0f;
 
 unsigned long sLastSampleMicros = 0;
 unsigned long sLastPublishMs = 0;
-unsigned long sLastMqttAttemptMs = 0;
 
 String sMqttTopic;
 String sMqttClientId;
@@ -124,18 +130,15 @@ bool calibrateGyroOffsets() {
 bool initMpu(String& errorOut) {
   Wire.begin(kGyroSdaPin, kGyroSclPin);
   Wire.setClock(400000UL);
+  Wire.setTimeOut(20);
 
   uint8_t whoAmI = 0;
   if (!readMpuRegisters(kRegWhoAmI, &whoAmI, 1)) {
-    sGyroHardwareProbed = true;
-    sGyroHardwareDetected = false;
     errorOut = "Gyro WHO_AM_I read failed on GPIO3/GPIO13";
     return false;
   }
 
   if ((whoAmI & 0x7E) != 0x68) {
-    sGyroHardwareProbed = true;
-    sGyroHardwareDetected = false;
     errorOut = "Unexpected MPU6050 WHO_AM_I value";
     return false;
   }
@@ -149,8 +152,10 @@ bool initMpu(String& errorOut) {
   }
 
   delay(100);
-  writeMpuRegister(kRegGyroConfig, 0x00);
-  writeMpuRegister(kRegAccelConfig, 0x00);
+  if (!writeMpuRegister(kRegGyroConfig, 0x00) || !writeMpuRegister(kRegAccelConfig, 0x00)) {
+    errorOut = "Unable to configure MPU6050 ranges";
+    return false;
+  }
 
   if (!calibrateGyroOffsets()) {
     errorOut = "Gyro calibration failed";
@@ -161,53 +166,50 @@ bool initMpu(String& errorOut) {
   sPitch = 0.0f;
   sRoll = 0.0f;
   sLastSampleMicros = micros();
-  sImuReady = true;
 
   Serial.print("Gyro ready on SDA=");
   Serial.print(kGyroSdaPin);
   Serial.print(" SCL=");
   Serial.println(kGyroSclPin);
-
   errorOut = "";
   return true;
 }
 
-void ensureMqttIdentity() {
-  String uuid = getGyroIdentityUuid();
-  if (uuid.length() == 0) {
-    sMqttTopic = "";
-    sMqttClientId = "";
-    return;
+esp_err_t mqttEvent(esp_mqtt_event_handle_t event) {
+  if (event->event_id == MQTT_EVENT_CONNECTED) sMqttConnected.store(true);
+  if (event->event_id == MQTT_EVENT_DISCONNECTED || event->event_id == MQTT_EVENT_ERROR) {
+    sMqttConnected.store(false);
   }
-
-  sMqttTopic = "eyetracker/" + uuid + "/gyro";
-
-  String suffix = uuid;
-  if (suffix.length() > 18) {
-    suffix = suffix.substring(0, 18);
-  }
-
-  sMqttClientId = "espcam-gyro-" + suffix;
+  return ESP_OK;
 }
 
-void ensureMqttConnected() {
-  if (sMqttTopic.length() == 0 || sMqttClientId.length() == 0) {
-    ensureMqttIdentity();
+bool ensureMqttClient() {
+  if (sMqttClient) return true;
+  sMqttTopic = "eyetracker/" + getGyroIdentityUuid() + "/gyro";
+  char identity[32];
+  // Keep a unique ID for this client lifetime without exposing hardware identity.
+  snprintf(identity, sizeof(identity), "espcam-%08lx%08lx",
+           static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()));
+  sMqttClientId = identity;
+  esp_mqtt_client_config_t config = {};
+  config.host = kMqttBroker;
+  config.port = kMqttPort;
+  config.client_id = sMqttClientId.c_str();
+  config.event_handle = mqttEvent;
+  config.task_stack = 4096;
+  config.task_prio = 1;
+  config.buffer_size = 512;
+  config.network_timeout_ms = 2000;
+  config.reconnect_timeout_ms = 5000;
+  config.keepalive = 30;
+  sMqttClient = esp_mqtt_client_init(&config);
+  if (!sMqttClient) return false;
+  if (esp_mqtt_client_start(sMqttClient) != ESP_OK) {
+    esp_mqtt_client_destroy(sMqttClient);
+    sMqttClient = nullptr;
+    return false;
   }
-
-  if (sMqttTopic.length() == 0 || sMqttClientId.length() == 0 || sMqttClient.connected()) {
-    return;
-  }
-
-  unsigned long now = millis();
-  if (now - sLastMqttAttemptMs < 3000) {
-    return;
-  }
-
-  sLastMqttAttemptMs = now;
-  if (sMqttClient.connect(sMqttClientId.c_str())) {
-    Serial.println("Gyro MQTT connected");
-  }
+  return true;
 }
 
 bool updateOrientation() {
@@ -243,41 +245,25 @@ bool updateOrientation() {
 
   sPitch = kComplementaryAlpha * (sPitch + gxRate * dt) + (1.0f - kComplementaryAlpha) * accelPitch;
   sRoll = kComplementaryAlpha * (sRoll + gyRate * dt) + (1.0f - kComplementaryAlpha) * accelRoll;
-  sYaw += gzRate * dt;
+  sYaw = fmodf(sYaw + gzRate * dt, 360.0f);
+
   return true;
-}
-
-void publishOrientationIfDue() {
-  if (!sMqttClient.connected()) {
-    return;
-  }
-
-  unsigned long now = millis();
-  if (now - sLastPublishMs < 100) {
-    return;
-  }
-  sLastPublishMs = now;
-
-  String payload = "{";
-  payload += "\"yaw\":" + String(sYaw, 3);
-  payload += ",\"pitch\":" + String(sPitch, 3);
-  payload += ",\"roll\":" + String(sRoll, 3);
-  payload += "}";
-
-  sMqttClient.publish(sMqttTopic.c_str(), payload.c_str());
 }
 }  // namespace
 
 bool gyroHardwareAvailable() {
-  if (sGyroHardwareProbed) {
+  if (sImuReady || (sGyroHardwareProbed && millis() - sLastProbeAt < 5000)) {
     return sGyroHardwareDetected;
   }
 
-  String ignored;
-  initMpu(ignored);
-  if (!sImuReady) {
-    Wire.end();
-  }
+  Wire.begin(kGyroSdaPin, kGyroSclPin);
+  Wire.setClock(400000UL);
+  Wire.setTimeOut(20);
+
+  uint8_t whoAmI = 0;
+  sLastProbeAt = millis();
+  sGyroHardwareDetected = readMpuRegisters(kRegWhoAmI, &whoAmI, 1) && ((whoAmI & 0x7E) == 0x68);
+  sGyroHardwareProbed = true;
   return sGyroHardwareDetected;
 }
 
@@ -285,70 +271,90 @@ bool gyroValidateRuntime(String& messageOut) {
   messageOut = "";
 
   if (!isGyroToggleEnabled()) {
+    gyroStop();
     return true;
   }
 
   if (getGyroIdentityUuid().length() == 0) {
+    gyroStop();
     messageOut = "Gyro UUID is missing";
     return false;
   }
 
-  if (sImuReady) {
-    return true;
-  }
-
-  if (!initMpu(messageOut)) {
-    sGyroRunning = false;
-    sImuReady = false;
-    Wire.end();
+  if (WiFi.status() != WL_CONNECTED) {
+    gyroStop();
+    messageOut = "Wi-Fi is not connected";
     return false;
   }
 
-  return true;
-}
-
-bool gyroBeginIfEligible() {
-  if (!isGyroToggleEnabled()) {
-    sGyroRunning = false;
+  if (!gyroHardwareAvailable()) {
+    gyroStop();
+    messageOut = "Gyro hardware is not available on GPIO3/GPIO13";
     return false;
   }
 
-  String error;
-  if (!gyroValidateRuntime(error)) {
-    Serial.print("Gyro start skipped: ");
-    Serial.println(error);
-    sGyroRunning = false;
-    return false;
+  if (!sImuReady) {
+    if (!initMpu(messageOut)) {
+      gyroStop();
+      return false;
+    }
+    sImuReady = true;
   }
 
-  ensureMqttIdentity();
-  sMqttClient.setServer(kMqttBroker, kMqttPort);
+  if (!ensureMqttClient()) {
+    messageOut = "Unable to allocate MQTT client";
+    return false;
+  }
+  sLastSampleMicros = micros();
   sGyroRunning = true;
   return true;
 }
 
-void gyroStop() {
-  sGyroRunning = false;
-  if (sMqttClient.connected()) {
-    sMqttClient.disconnect();
-  }
+bool gyroBeginIfEligible() {
+  sInitAttempted = true;
+  sLastInitAttempt = millis();
+  return gyroValidateRuntime(sLastError);
 }
 
-bool gyroIsRunning() {
-  return sGyroRunning;
+void gyroStop() {
+  if (sMqttClient) {
+    esp_mqtt_client_stop(sMqttClient);
+    esp_mqtt_client_destroy(sMqttClient);
+    sMqttClient = nullptr;
+  }
+  sMqttConnected.store(false);
+  sGyroRunning = false;
 }
+
+bool gyroIsRunning() { return sGyroRunning; }
+bool gyroMqttConnected() { return sMqttConnected.load(); }
+const char* gyroLastError() { return sLastError.c_str(); }
 
 void gyroLoop() {
-  if (!sGyroRunning || WiFi.status() != WL_CONNECTED) {
+  if (!isGyroToggleEnabled() || getGyroIdentityUuid().length() == 0 || WiFi.status() != WL_CONNECTED) {
+    gyroStop();
     return;
   }
-
-  ensureMqttConnected();
-  sMqttClient.loop();
-
+  const uint32_t now = millis();
+  if (!sGyroRunning) {
+    if (sInitAttempted && now - sLastInitAttempt < 5000) return;
+    gyroBeginIfEligible();
+    if (!sGyroRunning) return;
+  }
+  if (now - sLastPublishMs < 50) return;
+  sLastPublishMs = now;
   if (!updateOrientation()) {
+    sLastError = "MPU6050 read failed; retrying initialization";
+    sImuReady = false;
+    sGyroHardwareProbed = false;
+    gyroStop();
     return;
   }
-
-  publishOrientationIfDue();
+  sLastError = "";
+  // QoS 0 data is disposable. Bound the queue and discard stale samples during outages.
+  if (sMqttConnected.load() && esp_mqtt_client_get_outbox_size(sMqttClient) < 512) {
+    char payload[64];
+    snprintf(payload, sizeof(payload), "%.1f,%.1f,%.1f", sYaw, sPitch, sRoll);
+    esp_mqtt_client_enqueue(sMqttClient, sMqttTopic.c_str(), payload, 0, 0, 0, true);
+  }
 }

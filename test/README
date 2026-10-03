@@ -1,11 +1,18 @@
+ESP32-CAM validation
+====================
 
-This directory is intended for PlatformIO Test Runner and project tests.
+The user requires newly created artifacts under ~/Desktop/Codex-projects/.
+Host tests and the original working-source snapshot are therefore stored in:
+  ~/Desktop/Codex-projects/esp-cam-validation/
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+Re-run:
+  python3 ~/Desktop/Codex-projects/esp-cam-validation/run-checks.py
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+The runner regenerates its includes from current src files (hardware includes
+and POSIX calls use test adapters), builds with AddressSanitizer/UndefinedBehaviorSanitizer,
+and exercises concurrent capture, slow consumers, Wi-Fi loss, SD/camera errors,
+allocation/task failures, repeated sessions and network input/response limits.
+It also runs actual embedded UI JavaScript and the FFmpeg export format check.
+
+These host adapters are regression checks, not an ESP32 simulator. Follow the
+on-board validation checklist in SERIAL_PROTOCOL.md before relying on recordings.
