@@ -1,5 +1,7 @@
 # Convert an SD recording to an upright video
 
+> This tool applies to recordings from the earlier firmware. The `codex/mqtt-servos` branch disables SD recording to use GPIO14/GPIO15 for servos.
+
 From the project directory, with FFmpeg and PowerShell installed:
 
 ```powershell

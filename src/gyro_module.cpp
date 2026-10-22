@@ -1,4 +1,5 @@
 #include "app_shared.h"
+#include "mqtt_config.h"
 #include <mqtt_client.h>
 #include <esp_random.h>
 #include <atomic>
@@ -12,15 +13,12 @@ constexpr uint8_t kRegWhoAmI = 0x75;
 constexpr uint8_t kRegGyroConfig = 0x1B;
 constexpr uint8_t kRegAccelConfig = 0x1C;
 
-// User-requested pin plan with SD_MMC switched to 1-bit mode.
+// Optional gyro wiring remains separate from the GPIO14/GPIO15 servos.
 constexpr int kGyroSdaPin = 3;
 constexpr int kGyroSclPin = 13;
 
 constexpr float kGyroScale = 131.0f;
 constexpr float kComplementaryAlpha = 0.98f;
-
-constexpr char kMqttBroker[] = "broker.hivemq.com";
-constexpr uint16_t kMqttPort = 1883;
 
 esp_mqtt_client_handle_t sMqttClient = nullptr;
 std::atomic<bool> sMqttConnected{false};
@@ -192,8 +190,8 @@ bool ensureMqttClient() {
            static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()));
   sMqttClientId = identity;
   esp_mqtt_client_config_t config = {};
-  config.host = kMqttBroker;
-  config.port = kMqttPort;
+  config.host = kPublicMqttBrokerHost;
+  config.port = kPublicMqttBrokerPort;
   config.client_id = sMqttClientId.c_str();
   config.event_handle = mqttEvent;
   config.task_stack = 4096;

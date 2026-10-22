@@ -6,7 +6,6 @@
 #include <ESPmDNS.h>
 #include <FS.h>
 #include <Preferences.h>
-#include <SD_MMC.h>
 #include <WebServer.h>
 #include <WiFi.h>
 

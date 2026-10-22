@@ -1,4 +1,5 @@
 #include "app_shared.h"
+#include "servo_module.h"
 
 void setup() {
   // Keep serial logs on UART0 TX (GPIO1) while leaving UART0 RX unassigned
@@ -18,17 +19,13 @@ void setup() {
     Serial.println("Indicator LED pin disabled because it conflicts with the active board wiring");
   }
 
-  if (recordButtonPinUsable()) {
-    pinMode(kRecordButtonPin, INPUT_PULLUP);
-    Serial.print("Record button ready on GPIO");
-    Serial.print(kRecordButtonPin);
-    Serial.println(" (active LOW with INPUT_PULLUP)");
-  } else {
-    Serial.println("Record button pin disabled because it conflicts with the active board wiring");
-  }
+  Serial.println("SD recording and record button disabled: GPIO14/GPIO15 are reserved for X/Y servos; remove the SD card");
 
   if (!preferences.begin("wifi-config", false)) {
     Serial.println("Preferences unavailable; settings will not survive reboot");
+  }
+  if (!servoBegin()) {
+    Serial.println("Continuing without working servo control; see /status for the error");
   }
   WiFi.persistent(false);
   loadGyroSettings();
@@ -36,10 +33,6 @@ void setup() {
 
   if (!initCamera()) {
     Serial.println("Continuing without a working camera");
-  }
-
-  if (!initStorage()) {
-    Serial.println("Continuing without a mounted SD card");
   }
 
   registerRoutes();
@@ -59,6 +52,7 @@ void setup() {
 }
 
 void loop() {
+  servoLoop();
   server.handleClient();
 
   if (apActive) {

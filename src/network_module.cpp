@@ -189,7 +189,7 @@ String buildSetupPage() {
   <div class="shell">
     <div class="card">
       <h1>ESP32-CAM Setup</h1>
-      <p>Connect to the setup AP, save Wi-Fi and gyro options here, and the firmware will apply them without leaving the page blind.</p>
+      <p>Configure Wi-Fi and optional gyro authentication. MQTT servo control works independently of the gyro. SD recording and the record button are disabled because GPIO14/GPIO15 drive the servos; remove the SD card.</p>
     </div>
 
     <div id="status" class="status">Ready to configure Wi-Fi and optional gyro authentication.</div>
@@ -239,9 +239,12 @@ String buildSetupPage() {
       <div class="meta">
         <div class="meta-row"><span class="meta-label">Mode</span><span id="modeValue">SoftApConfig</span></div>
         <div class="meta-row"><span class="meta-label">Connected IP</span><span id="stationIpValue">-</span></div>
-        <div class="meta-row"><span class="meta-label">SD Card</span><span id="sdValue">Checking...</span></div>
+        <div class="meta-row"><span class="meta-label">SD Card</span><span id="sdValue">Disabled for servos</span></div>
         <div class="meta-row"><span class="meta-label">Time Sync</span><span id="timeValue">Not synced</span></div>
-        <div class="meta-row"><span class="meta-label">Recording</span><span id="recordingValue">Idle</span></div>
+        <div class="meta-row"><span class="meta-label">Recording</span><span id="recordingValue">Disabled for servos</span></div>
+        <div class="meta-row"><span class="meta-label">Servo angles</span><span id="servoAnglesValue">Waiting...</span></div>
+        <div class="meta-row"><span class="meta-label">Servo MQTT</span><span id="servoMqttValue">Waiting...</span></div>
+        <div class="meta-row"><span class="meta-label">Servo topic</span><span id="servoTopicValue" style="overflow-wrap:anywhere;">-</span></div>
       </div>
     </div>
   </div>
@@ -309,9 +312,12 @@ String buildSetupPage() {
 
         $('modeValue').textContent = status.mode;
         $('stationIpValue').textContent = status.stationIp || '-';
-        $('sdValue').textContent = status.sdReady ? 'Ready' : 'Unavailable';
+        $('sdValue').textContent = 'Disabled for servos (GPIO14/GPIO15)';
         $('timeValue').textContent = status.timeSynced ? 'Synced' : 'Not synced';
-        $('recordingValue').textContent = status.recordingActive ? ('Writing to ' + (status.recordingDirectory || 'session')) : 'Idle';
+        $('recordingValue').textContent = 'Disabled for servos';
+        $('servoAnglesValue').textContent = 'X ' + status.servoX + '° · Y ' + status.servoY + '°';
+        $('servoMqttValue').textContent = status.servoError || (!status.servoReady ? 'PWM unavailable' : (status.servoMqttConnected ? 'Ready for commands' : 'Connecting / offline'));
+        $('servoTopicValue').textContent = status.servoTopic || '-';
         updateGyroAvailability(status);
 
         renderLastError(status.lastErrorType, status.lastErrorMessage);
@@ -332,8 +338,6 @@ String buildSetupPage() {
           setStatus('Configuration failed. Returning to setup mode.', 'error');
         } else if (status.mode === 'ConnectedIdle') {
           setStatus('Connected to Wi-Fi. The viewer page is available at /.', 'success');
-        } else if (status.recordingActive) {
-          setStatus('Recording is active. Click the record button again to stop.', 'success');
         }
       } catch (error) {
         setStatus('Unable to fetch device status.', 'error');
@@ -555,7 +559,7 @@ String buildViewerPage() {
   <div class="shell">
     <div class="card">
       <h1>Camera Feed</h1>
-      <p>Live preview and SD recording can run together at <span id="captureResolution">the camera resolution</span>, targeting 20 FPS. Use the physical button to start or stop recording.</p>
+      <p>Live preview at <span id="captureResolution">the camera resolution</span>, targeting 20 FPS, with X/Y servos controlled by MQTT degree deltas. SD recording and the record button are disabled; GPIO14/GPIO15 drive the servos. Remove the SD card.</p>
     </div>
 
     <div class="grid">
@@ -571,12 +575,15 @@ String buildViewerPage() {
           <div class="meta-row"><label class="meta-label" for="rotation">Preview rotation</label><select id="rotation">
             <option value="0">0° — native orientation</option><option value="90">90° clockwise</option>
             <option value="-90">90° counterclockwise</option><option value="180">180°</option>
-          </select><p>Quarter turns display as <span id="quarterTurnResolution">the swapped resolution</span>. Use the same rotation when exporting recordings.</p></div>
+          </select><p>Quarter turns display as <span id="quarterTurnResolution">the swapped resolution</span>.</p></div>
           <div class="meta-row"><span class="meta-label">Performance</span><span id="performanceValue">Waiting...</span></div>
           <div class="meta-row"><span class="meta-label">Device message</span><span id="errorValue">None</span></div>
           <div class="meta-row"><span class="meta-label">Host</span><span>esp32.local</span></div>
           <div class="meta-row"><span class="meta-label">Station IP</span><span id="stationIpValue">-</span></div>
-          <div class="meta-row"><span class="meta-label">Recording</span><span id="recordingValue">Idle</span></div>
+          <div class="meta-row"><span class="meta-label">Recording</span><span id="recordingValue">Disabled for servos</span></div>
+          <div class="meta-row"><span class="meta-label">Servo angles</span><span id="servoAnglesValue">Waiting...</span></div>
+          <div class="meta-row"><span class="meta-label">Servo MQTT</span><span id="servoMqttValue">Waiting...</span></div>
+          <div class="meta-row"><span class="meta-label">Servo topic</span><span id="servoTopicValue" style="overflow-wrap:anywhere;">-</span></div>
           <div class="meta-row"><span class="meta-label">Time Sync</span><span id="timeValue">Not synced</span></div>
           <div class="meta-row"><span class="meta-label">Setup</span><span><a href="/setup">Open configuration page</a></span></div>
         </div>
@@ -620,7 +627,7 @@ String buildViewerPage() {
     }
     streamImage.addEventListener('error', resetStream);
 
-    function updateStreamAvailability(available, recordingActive) {
+    function updateStreamAvailability(available) {
       if (available) {
         streamWrap.classList.remove('hidden');
         if (!activeStreamUrl && Date.now() >= nextStreamAttempt) {
@@ -631,15 +638,12 @@ String buildViewerPage() {
           streamImage.src = activeStreamUrl;
           lastPreviewProgress = Date.now();
         }
-        statusNode.textContent = recordingActive
-          ? 'Preview and recording are active.' : 'Live preview enabled.';
+        statusNode.textContent = 'Live preview enabled.';
         return;
       }
       streamWrap.classList.add('hidden');
       resetStream();
-      statusNode.textContent = recordingActive
-        ? 'Recording continues on the SD card. Preview needs Wi-Fi.'
-        : 'The camera preview is currently unavailable.';
+      statusNode.textContent = 'The camera preview is currently unavailable.';
     }
 
     async function refreshStatus() {
@@ -667,21 +671,22 @@ String buildViewerPage() {
         }
         document.getElementById('captureResolution').textContent = hasDimensions ? status.width + ' × ' + status.height : 'unavailable';
         document.getElementById('quarterTurnResolution').textContent = hasDimensions ? status.height + ' × ' + status.width : 'unavailable';
-        document.getElementById('recordingValue').textContent = status.recordingActive
-          ? ((status.recordingStopping ? 'Finishing ' : 'Writing to ') + (status.recordingDirectory || 'session'))
-          : 'Idle';
+        document.getElementById('recordingValue').textContent = 'Disabled for servos';
+        document.getElementById('servoAnglesValue').textContent = 'X ' + status.servoX + '° · Y ' + status.servoY + '°';
+        document.getElementById('servoMqttValue').textContent = status.servoError || (!status.servoReady ? 'PWM unavailable' : (status.servoMqttConnected ? 'Ready for commands' : 'Connecting / offline'));
+        document.getElementById('servoTopicValue').textContent = status.servoTopic || '-';
         document.getElementById('timeValue').textContent = status.timeSynced ? 'Synced' : 'Not synced';
 
         document.getElementById('performanceValue').textContent =
-          status.recordedFrames + ' saved · ' + status.droppedFrames + ' dropped · slowest SD write ' + status.maxWriteMs + ' ms';
-        document.getElementById('errorValue').textContent = status.mediaError || status.lastErrorMessage || status.gyroError || 'None';
+          status.capturedFrames + ' captured · ' + status.previewFrames + ' previewed · ' + status.captureErrors + ' capture errors';
+        document.getElementById('errorValue').textContent = status.servoError || status.mediaError || status.lastErrorMessage || status.gyroError || 'None';
         if (status.previewFrames !== lastPreviewFrames) {
           lastPreviewFrames = status.previewFrames;
           lastPreviewProgress = Date.now();
         } else if (activeStreamUrl && Date.now() - lastPreviewProgress > 15000) {
           resetStream();
         }
-        updateStreamAvailability(status.streamAvailable, status.recordingActive);
+        updateStreamAvailability(status.streamAvailable);
       } catch (error) {
         statusNode.textContent = 'Unable to fetch current device status. Reconnecting...';
       } finally {
