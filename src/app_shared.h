@@ -6,6 +6,7 @@
 #include <ESPmDNS.h>
 #include <FS.h>
 #include <Preferences.h>
+#include <SD_MMC.h>
 #include <WebServer.h>
 #include <WiFi.h>
 
@@ -80,6 +81,9 @@ struct MediaStatus {
   uint16_t height = 0;
   MediaError error = MediaError::None;
 };
+
+// GPIO14/GPIO15 are reserved for X/Y servos; never initialize SD recording.
+constexpr bool kSdRecordingEnabled = false;
 
 // The SDK allocates JPEG buffers by a preset's pixel count / 5. XGA reserves
 // about 154 KiB per buffer for detailed portrait JPEGs; output is set separately.

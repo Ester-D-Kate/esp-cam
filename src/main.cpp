@@ -24,15 +24,17 @@ void setup() {
   if (!preferences.begin("wifi-config", false)) {
     Serial.println("Preferences unavailable; settings will not survive reboot");
   }
-  if (!servoBegin()) {
-    Serial.println("Continuing without working servo control; see /status for the error");
-  }
   WiFi.persistent(false);
   loadGyroSettings();
   loadConnectionError();
 
   if (!initCamera()) {
     Serial.println("Continuing without a working camera");
+  }
+
+  // Preserve the original camera-first startup before enabling servo output.
+  if (!servoBegin()) {
+    Serial.println("Continuing without working servo control; see /status for the error");
   }
 
   registerRoutes();
@@ -52,7 +54,6 @@ void setup() {
 }
 
 void loop() {
-  servoLoop();
   server.handleClient();
 
   if (apActive) {
@@ -60,5 +61,6 @@ void loop() {
   }
 
   processRuntimeState();
+  servoLoop();
   delay(1);
 }

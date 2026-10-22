@@ -2,14 +2,20 @@
 #include <esp_heap_caps.h>
 #include <esp_http_server.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace {
 constexpr size_t kFrameSlots = 6;
 constexpr size_t kFrameCapacity = 160 * 1024;
+constexpr size_t kRecordingQueueDepth = 2;
+constexpr size_t kSdWriteBufferSize = 8 * 1024;
 constexpr uint8_t kDriverFrameBuffers = 2;
 constexpr int kCapturePreviewCore = 1;
+constexpr int kSdWriterCore = 0;
 constexpr uint16_t kPreviewPort = 81;
 constexpr uint8_t kJpegQuality = 12;
 // Capture the OV3660's final MCU in full; hide its unused portrait edge.
@@ -26,11 +32,17 @@ struct Frame {
 Frame sFrames[kFrameSlots];
 Frame* sLatest = nullptr;
 SemaphoreHandle_t sMutex = nullptr;
+QueueHandle_t sRecordQueue = nullptr;
 TaskHandle_t sCaptureTask = nullptr;
+TaskHandle_t sWriterTask = nullptr;
+uint8_t* sSdWriteBuffer = nullptr;  // Internal DMA memory; owned by the SD worker.
 httpd_handle_t sPreviewServer = nullptr;
 MediaStatus sStatus;
 bool sPreviewEnabled = false;
+bool sAcceptRecording = false;
 uint32_t sPreviewGeneration = 0;
+uint32_t sRecordingStartedAt = 0;
+char sRecordingDirectory[96] = {};
 struct JpegGeometry {
   uint16_t encodedWidth = 0;
   uint16_t height = 0;
@@ -65,7 +77,17 @@ Frame* reserveFrame() {
       return &frame;
     }
   }
+  if (sAcceptRecording) ++sStatus.recordingDropped;
   return nullptr;
+}
+
+void failRecording(MediaError error) {
+  MediaLock lock;
+  if (sStatus.recording) {
+    if (sStatus.error == MediaError::None) sStatus.error = error;
+    sAcceptRecording = false;
+    sStatus.stopping = true;
+  }
 }
 
 void publishFrame(Frame* frame) {
@@ -75,6 +97,15 @@ void publishFrame(Frame* frame) {
     if (sLatest) --sLatest->references;
     sLatest = frame;
     ++frame->references;
+  }
+  // Enqueue and stop share the mutex. I/O and blocking queue operations never
+  // run in this lock. A frame captured before this session must not enter it.
+  if (sAcceptRecording && static_cast<int32_t>(frame->capturedAt - sRecordingStartedAt) >= 0) {
+    ++frame->references;
+    if (xQueueSend(sRecordQueue, &frame, 0) != pdTRUE) {
+      --frame->references;
+      ++sStatus.recordingDropped;
+    }
   }
   --frame->references;  // Release the producer's reference.
 }
@@ -315,13 +346,14 @@ bool configureCameraSensor() {
 
 void captureTask(void*) {
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  uint32_t consecutiveErrors = 0;
   TickType_t lastWake = xTaskGetTickCount();
   const TickType_t interval = pdMS_TO_TICKS(kRecordingFrameIntervalMs);
   for (;;) {
     bool needed;
     {
       MediaLock lock;
-      needed = sPreviewEnabled && sStatus.previewClient;
+      needed = sAcceptRecording || (sPreviewEnabled && sStatus.previewClient);
       if (!needed && sLatest) {
         --sLatest->references;
         sLatest = nullptr;
@@ -344,8 +376,11 @@ void captureTask(void*) {
           MediaLock lock;
           if (oversized) ++sStatus.oversizedFrames;
           else ++sStatus.captureErrors;
+          if (sAcceptRecording) ++sStatus.recordingDropped;
         }
+        if (++consecutiveErrors >= 3) failRecording(MediaError::CameraCapture);
       } else {
+        consecutiveErrors = 0;
         frame->length = fb->len;
         frame->capturedAt = millis();
         memcpy(frame->data, fb->buf, frame->length);
@@ -359,6 +394,134 @@ void captureTask(void*) {
       vTaskDelay(1);  // No catch-up bursts after a slow camera operation.
     } else {
       vTaskDelayUntil(&lastWake, interval);
+    }
+  }
+}
+
+int openRecordingFile(const char* path) {
+  char absolutePath[160];
+  const int length = snprintf(absolutePath, sizeof(absolutePath), "/sdcard%s", path);
+  if (length <= 0 || static_cast<size_t>(length) >= sizeof(absolutePath)) return -1;
+  return ::open(absolutePath, O_WRONLY | O_CREAT | O_EXCL, 0666);
+}
+
+bool writeRecordingFrame(const Frame& frame, int index, uint32_t number,
+                         uint32_t startedAt, const char* directory) {
+  char path[128];
+  snprintf(path, sizeof(path), "%s/%06lu.jpg", directory,
+           static_cast<unsigned long>(number));
+  // Bypass stdio buffering: its buffer can be in PSRAM even when the source
+  // is DMA-capable. The SD driver can send several sectors per DMA transfer
+  // only when the pointer passed through FatFS is in aligned internal RAM.
+  const int file = openRecordingFile(path);
+  if (file < 0) {
+    failRecording(MediaError::StorageWrite);
+    return false;
+  }
+  bool complete = true;
+  for (size_t offset = 0; offset < frame.length; ) {
+    const size_t remaining = frame.length - offset;
+    const size_t count = remaining < kSdWriteBufferSize ? remaining : kSdWriteBufferSize;
+    memcpy(sSdWriteBuffer, frame.data + offset, count);
+    if (::write(file, sSdWriteBuffer, count) != static_cast<ssize_t>(count)) {
+      complete = false;
+      break;
+    }
+    offset += count;
+    if (offset < frame.length) vTaskDelay(1);
+  }
+  const int closeResult = ::close(file);
+  if (!complete || closeResult != 0) {
+    SD_MMC.remove(path);
+    failRecording(MediaError::StorageWrite);
+    return false;
+  }
+  char line[96];
+  const int length = snprintf(line, sizeof(line), "%06lu.jpg,%lu,%u\n",
+      static_cast<unsigned long>(number),
+      static_cast<unsigned long>(frame.capturedAt - startedAt),
+      static_cast<unsigned>(frame.length));
+  if (length <= 0 || static_cast<size_t>(length) >= sizeof(line) ||
+      ::write(index, line, length) != static_cast<ssize_t>(length)) {
+    failRecording(MediaError::MetadataWrite);
+    return false;
+  }
+  return true;
+}
+
+void writerTask(void*) {
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  int index = -1;
+  bool sessionOpen = false;
+  char directory[sizeof(sRecordingDirectory)] = {};
+  uint32_t startedAt = 0;
+  uint32_t nextFrame = 1;
+  uint32_t lastFlushAt = 0;
+  for (;;) {
+    bool active;
+    {
+      MediaLock lock;
+      active = sStatus.recording;
+      if (active && !sessionOpen) {
+        memcpy(directory, sRecordingDirectory, sizeof(directory));
+        startedAt = sRecordingStartedAt;
+      }
+    }
+    if (!active) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    if (!sessionOpen) {
+      char path[128];
+      snprintf(path, sizeof(path), "%s/frames.csv", directory);
+      index = openRecordingFile(path);
+      const char header[] = "file,elapsed_ms,bytes\n";
+      if (index < 0 || ::write(index, header, sizeof(header) - 1) != static_cast<ssize_t>(sizeof(header) - 1)) {
+        failRecording(MediaError::MetadataWrite);
+      }
+      sessionOpen = true;
+      nextFrame = 1;
+      lastFlushAt = millis();
+    }
+
+    Frame* frame = nullptr;
+    if (xQueueReceive(sRecordQueue, &frame, pdMS_TO_TICKS(20)) == pdTRUE) {
+      bool healthy;
+      {
+        MediaLock lock;
+        healthy = sStatus.error == MediaError::None;
+      }
+      const uint32_t writeStart = millis();
+      if (healthy && writeRecordingFrame(*frame, index, nextFrame, startedAt, directory)) {
+        ++nextFrame;
+        MediaLock lock;
+        ++sStatus.recordedFrames;
+        const uint32_t elapsed = millis() - writeStart;
+        if (elapsed > sStatus.maxWriteMs) sStatus.maxWriteMs = elapsed;
+      } else {
+        MediaLock lock;
+        ++sStatus.recordingDropped;
+      }
+      releaseFrame(frame);
+    }
+    if (index >= 0 && millis() - lastFlushAt >= 1000) {
+      if (::fsync(index) != 0) failRecording(MediaError::MetadataWrite);
+      lastFlushAt = millis();
+    }
+    bool finished;
+    {
+      MediaLock lock;
+      finished = !sAcceptRecording && uxQueueMessagesWaiting(sRecordQueue) == 0;
+    }
+    if (finished) {
+      if (index >= 0) {
+        if (::close(index) != 0) failRecording(MediaError::MetadataWrite);
+        index = -1;
+      }
+      sessionOpen = false;
+      MediaLock lock;
+      sStatus.recording = false;  // Completion is visible only after storage closes.
+      sStatus.stopping = false;
     }
   }
 }
@@ -438,11 +601,17 @@ esp_err_t previewHandler(httpd_req_t* request) {
 }
 
 void releasePipelineResources() {
-  // Only used before the capture worker is notified to start.
+  // Only used before either worker is notified to start.
   if (sCaptureTask) vTaskDelete(sCaptureTask);
+  if (sWriterTask) vTaskDelete(sWriterTask);
   sCaptureTask = nullptr;
+  sWriterTask = nullptr;
+  if (sRecordQueue) vQueueDelete(sRecordQueue);
   if (sMutex) vSemaphoreDelete(sMutex);
+  sRecordQueue = nullptr;
   sMutex = nullptr;
+  heap_caps_free(sSdWriteBuffer);
+  sSdWriteBuffer = nullptr;
   for (Frame& frame : sFrames) {
     heap_caps_free(frame.data);
     frame = Frame();
@@ -453,18 +622,27 @@ void releasePipelineResources() {
 bool initCamera() {
   if (cameraReady) return true;
   if (!psramFound()) {
-    Serial.println("Camera preview requires working PSRAM");
+    Serial.println("Camera requires working PSRAM for concurrent recording and preview");
     return false;
   }
   sMutex = xSemaphoreCreateMutex();
+  sRecordQueue = xQueueCreate(kRecordingQueueDepth, sizeof(Frame*));
   for (Frame& frame : sFrames) {
     frame.data = static_cast<uint8_t*>(heap_caps_malloc(kFrameCapacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!frame.data || !sMutex) {
+    if (!frame.data || !sMutex || !sRecordQueue) {
       Serial.println("Unable to allocate bounded camera buffers");
       releasePipelineResources();
       return false;
     }
   }
+  sSdWriteBuffer = static_cast<uint8_t*>(heap_caps_malloc(
+      kSdWriteBufferSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT));
+  if (!sSdWriteBuffer) {
+    Serial.println("Unable to allocate the SD DMA write buffer");
+    releasePipelineResources();
+    return false;
+  }
+
   camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -503,17 +681,19 @@ bool initCamera() {
     releasePipelineResources();
     return false;
   }
-  if (xTaskCreatePinnedToCore(captureTask, "camera-capture", 4096, nullptr, 2, &sCaptureTask, kCapturePreviewCore) != pdPASS) {
+  if (xTaskCreatePinnedToCore(captureTask, "camera-capture", 4096, nullptr, 2, &sCaptureTask, kCapturePreviewCore) != pdPASS ||
+      xTaskCreatePinnedToCore(writerTask, "sd-writer", 6144, nullptr, 1, &sWriterTask, kSdWriterCore) != pdPASS) {
     releasePipelineResources();
     esp_camera_deinit();
-    Serial.println("Unable to start camera capture worker");
+    Serial.println("Unable to start media workers");
     return false;
   }
   cameraReady = true;
   xTaskNotifyGive(sCaptureTask);
+  xTaskNotifyGive(sWriterTask);
   Serial.printf("Camera ready: %u x %u JPEG, target 20 FPS, bounded PSRAM pipeline\n",
                 sGeometry.outputWidth, sGeometry.height);
-  Serial.println("Media workers: capture/preview core 1; SD recording disabled for servos");
+  Serial.println("Media workers: capture/preview core 1, SD writer core 0 with 8 KiB DMA staging");
   return true;
 }
 
@@ -529,7 +709,7 @@ bool startPreviewServer() {
   config.backlog_conn = 2;
   config.recv_wait_timeout = 1;
   // Bound a stalled socket, rather than cutting a JPEG off during successful
-  // writes. Slow viewers hold one slot and skip old frames.
+  // writes. Slow viewers hold one slot and skip old frames; SD keeps running.
   config.send_wait_timeout = 5;
   if (httpd_start(&sPreviewServer, &config) != ESP_OK) {
     sPreviewServer = nullptr;
@@ -557,12 +737,28 @@ void setPreviewEnabled(bool enabled) {
   }
 }
 
-bool beginMediaRecording(const String&) {
-  return false;  // GPIO14/GPIO15 are servo outputs; no SD worker is created.
+bool beginMediaRecording(const String& directory) {
+  if (!kSdRecordingEnabled) return false;
+  if (!cameraReady || directory.length() == 0 || directory.length() >= sizeof(sRecordingDirectory)) return false;
+  MediaLock lock;
+  if (sStatus.recording) return false;
+  directory.toCharArray(sRecordingDirectory, sizeof(sRecordingDirectory));
+  sRecordingStartedAt = millis();
+  sStatus.recordedFrames = 0;
+  sStatus.recordingDropped = 0;
+  sStatus.maxWriteMs = 0;
+  sStatus.error = MediaError::None;
+  sStatus.recording = true;
+  sStatus.stopping = false;
+  sAcceptRecording = true;
+  return true;
 }
 
 void endMediaRecording() {
-  // Recording is disabled for this firmware.
+  if (!sMutex) return;
+  MediaLock lock;
+  sAcceptRecording = false;
+  sStatus.stopping = sStatus.recording;
 }
 
 MediaStatus mediaStatus() {
