@@ -787,8 +787,8 @@ String buildStatusJson() {
   json += ",\"maxWriteMs\":" + String(media.maxWriteMs);
   json += ",\"freeHeap\":" + String(ESP.getFreeHeap());
   json += ",\"freePsram\":" + String(ESP.getFreePsram());
-  json += ",\"targetFps\":20,\"width\":" + String(kCameraWidth);
-  json += ",\"height\":" + String(kCameraHeight) + ",\"streamPort\":81";
+  json += ",\"targetFps\":20,\"width\":" + String(media.width);
+  json += ",\"height\":" + String(media.height) + ",\"streamPort\":81";
   json += ",\"mediaError\":\"" + escapeJson(mediaErrorMessage(media.error)) + "\"";
   json += ",\"gyroMqttConnected\":";
   json += gyroMqttConnected() ? "true" : "false";

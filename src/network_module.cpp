@@ -569,9 +569,9 @@ String buildViewerPage() {
       <div class="card">
         <div class="meta">
           <div class="meta-row"><label class="meta-label" for="rotation">Preview rotation</label><select id="rotation">
-            <option value="0">0° — portrait</option><option value="90">90° clockwise</option>
+            <option value="0">0° — native orientation</option><option value="90">90° clockwise</option>
             <option value="-90">90° counterclockwise</option><option value="180">180°</option>
-          </select><p>Quarter turns display as <span id="landscapeResolution">landscape video</span>. Use the same rotation when exporting recordings.</p></div>
+          </select><p>Quarter turns display as <span id="quarterTurnResolution">the swapped resolution</span>. Use the same rotation when exporting recordings.</p></div>
           <div class="meta-row"><span class="meta-label">Performance</span><span id="performanceValue">Waiting...</span></div>
           <div class="meta-row"><span class="meta-label">Device message</span><span id="errorValue">None</span></div>
           <div class="meta-row"><span class="meta-label">Host</span><span>esp32.local</span></div>
@@ -594,20 +594,23 @@ String buildViewerPage() {
     let lastPreviewFrames = -1;
     let lastPreviewProgress = Date.now();
     let activeStreamUrl = '';
+    let frameWidth = 600;
+    let frameHeight = 800;
+    let rotationPreferenceKey = '';
 
     function applyRotation(value) {
       const angle = [0, 90, -90, 180].includes(Number(value)) ? Number(value) : 0;
       rotationControl.value = String(angle);
       const quarterTurn = Math.abs(angle) === 90;
-      streamWrap.style.aspectRatio = quarterTurn ? '4 / 3' : '3 / 4';
-      streamImage.style.width = quarterTurn ? '75%' : '100%';
-      streamImage.style.height = quarterTurn ? '133.333333%' : '100%';
+      streamWrap.style.aspectRatio = String(quarterTurn ? frameHeight / frameWidth : frameWidth / frameHeight);
+      streamImage.style.width = quarterTurn ? (frameWidth / frameHeight * 100) + '%' : '100%';
+      streamImage.style.height = quarterTurn ? (frameHeight / frameWidth * 100) + '%' : '100%';
       streamImage.style.transform = 'translate(-50%, -50%) rotate(' + angle + 'deg)';
-      try { localStorage.setItem('cameraPortraitRotation', String(angle)); } catch (_) {}
+      if (rotationPreferenceKey) {
+        try { localStorage.setItem(rotationPreferenceKey, String(angle)); } catch (_) {}
+      }
     }
-    let savedRotation = '0';
-    try { savedRotation = localStorage.getItem('cameraPortraitRotation') ?? '0'; } catch (_) {}
-    applyRotation(savedRotation);
+    applyRotation(0);
     rotationControl.addEventListener('change', () => applyRotation(rotationControl.value));
 
     function resetStream() {
@@ -645,8 +648,25 @@ String buildViewerPage() {
         const status = await response.json();
 
         document.getElementById('stationIpValue').textContent = status.stationIp || '-';
-        document.getElementById('captureResolution').textContent = status.width + ' × ' + status.height;
-        document.getElementById('landscapeResolution').textContent = status.height + ' × ' + status.width;
+        const hasDimensions = Number.isInteger(status.width) && Number.isInteger(status.height) && status.width > 0 && status.height > 0;
+        if (hasDimensions) {
+          // Keep each native orientation's receiver rotation independent.
+          const preferenceKey = 'cameraNativeRotation:' + (status.width < status.height ? 'portrait' : 'landscape');
+          const orientationChanged = rotationPreferenceKey !== preferenceKey;
+          const dimensionsChanged = frameWidth !== status.width || frameHeight !== status.height;
+          frameWidth = status.width;
+          frameHeight = status.height;
+          if (orientationChanged) {
+            rotationPreferenceKey = preferenceKey;
+            let savedRotation = '0';
+            try { savedRotation = localStorage.getItem(preferenceKey) ?? '0'; } catch (_) {}
+            applyRotation(savedRotation);
+          } else if (dimensionsChanged) {
+            applyRotation(rotationControl.value);
+          }
+        }
+        document.getElementById('captureResolution').textContent = hasDimensions ? status.width + ' × ' + status.height : 'unavailable';
+        document.getElementById('quarterTurnResolution').textContent = hasDimensions ? status.height + ' × ' + status.width : 'unavailable';
         document.getElementById('recordingValue').textContent = status.recordingActive
           ? ((status.recordingStopping ? 'Finishing ' : 'Writing to ') + (status.recordingDirectory || 'session'))
           : 'Idle';

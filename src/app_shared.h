@@ -77,14 +77,16 @@ struct MediaStatus {
   uint32_t captureErrors = 0;
   uint32_t oversizedFrames = 0;
   uint32_t maxWriteMs = 0;
+  uint16_t width = 0;
+  uint16_t height = 0;
   MediaError error = MediaError::None;
 };
 
 // The SDK allocates JPEG buffers by a preset's pixel count / 5. XGA reserves
 // about 154 KiB per buffer for detailed portrait JPEGs; output is set separately.
 constexpr framesize_t kCameraBufferFrameSize = FRAMESIZE_XGA;
-constexpr uint16_t kCameraWidth = 600;
-constexpr uint16_t kCameraHeight = 800;
+constexpr uint16_t kCameraPortraitWidth = 600;
+constexpr uint16_t kCameraPortraitHeight = 800;
 
 extern const char kAccessPointSsid[];
 extern const char kAccessPointPassword[];

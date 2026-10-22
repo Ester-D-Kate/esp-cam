@@ -13,13 +13,13 @@ constexpr size_t kFrameSlots = 6;
 constexpr size_t kFrameCapacity = 160 * 1024;
 constexpr size_t kRecordingQueueDepth = 2;
 constexpr size_t kSdWriteBufferSize = 8 * 1024;
+constexpr uint8_t kDriverFrameBuffers = 2;
 constexpr int kCapturePreviewCore = 1;
 constexpr int kSdWriterCore = 0;
 constexpr uint16_t kPreviewPort = 81;
 constexpr uint8_t kJpegQuality = 12;
-// OV3660's YUV422 JPEG encoder truncates incomplete 16-pixel MCU columns.
-// Capture the final MCU in full; the JPEG header can hide its unused edge.
-constexpr uint16_t kOv3660JpegWidth = ((kCameraWidth + 15) / 16) * 16;
+// Capture the OV3660's final MCU in full; hide its unused portrait edge.
+constexpr uint16_t kPortraitJpegWidth = ((kCameraPortraitWidth + 15) / 16) * 16;
 
 struct Frame {
   uint8_t* data = nullptr;
@@ -43,7 +43,15 @@ bool sAcceptRecording = false;
 uint32_t sPreviewGeneration = 0;
 uint32_t sRecordingStartedAt = 0;
 char sRecordingDirectory[96] = {};
-uint16_t sSensorCaptureWidth = kCameraWidth;
+struct JpegGeometry {
+  uint16_t encodedWidth = 0;
+  uint16_t height = 0;
+  uint16_t outputWidth = 0;
+};
+JpegGeometry sGeometry;
+bool sPortraitCapture = false;
+uint16_t sSensorMaxWidth = 2048;
+uint16_t sSensorMaxHeight = 1536;
 
 class MediaLock {
  public:
@@ -102,10 +110,20 @@ void publishFrame(Frame* frame) {
   --frame->references;  // Release the producer's reference.
 }
 
-bool preparePortraitJpeg(camera_fb_t& frame) {
+struct JpegDiagnostics {
+  uint16_t width = 0;
+  uint16_t height = 0;
+  uint8_t sofMarker = 0;
+  uint8_t components = 0;
+  uint8_t sampling[3] = {};
+  const char* reason = "Invalid JPEG header";
+};
+
+bool prepareCameraJpeg(camera_fb_t& frame, JpegDiagnostics* diagnostics = nullptr) {
   // fb->width/height still describe the SDK buffer preset after set_res_raw.
-  // Read the baseline JPEG's own SOF header; never relabel landscape pixels.
+  // Read the baseline JPEG's own SOF header and check the selected orientation.
   uint8_t* data = frame.buf;
+  if (diagnostics) *diagnostics = JpegDiagnostics();
   if (!data || frame.len < 4 || data[0] != 0xff || data[1] != 0xd8) return false;
   size_t offset = 2;
   while (offset < frame.len) {
@@ -118,22 +136,73 @@ bool preparePortraitJpeg(camera_fb_t& frame) {
     if (frame.len - offset < 2) return false;
     const size_t length = (static_cast<size_t>(data[offset]) << 8) | data[offset + 1];
     if (length < 2 || length > frame.len - offset) return false;
-    if (marker == 0xc0) {
+    if (marker >= 0xc0 && marker <= 0xcf && marker != 0xc4 && marker != 0xc8 && marker != 0xcc) {
+      if (diagnostics) diagnostics->sofMarker = marker;
+      if (length >= 8 && diagnostics) {
+        diagnostics->height = (data[offset + 3] << 8) | data[offset + 4];
+        diagnostics->width = (data[offset + 5] << 8) | data[offset + 6];
+        diagnostics->components = data[offset + 7];
+        for (uint8_t i = 0; i < diagnostics->components && i < 3; ++i) {
+          if (length >= 8 + 3 * (i + 1)) diagnostics->sampling[i] = data[offset + 9 + 3 * i];
+        }
+      }
+      if (marker != 0xc0) {
+        if (diagnostics) diagnostics->reason = "Unsupported JPEG SOF marker";
+        return false;
+      }
       if (length < 8 || data[offset + 2] != 8) return false;
       const uint8_t components = data[offset + 7];
       if ((components != 1 && components != 3) || length != 8 + 3 * components) return false;
       const uint16_t height = (data[offset + 3] << 8) | data[offset + 4];
       const uint16_t width = (data[offset + 5] << 8) | data[offset + 6];
-      if (width != sSensorCaptureWidth || height != kCameraHeight) return false;
-      if (width != kCameraWidth) {
-        // Only trim the OV3660's known 4:2:2 format. Both 608 and 600 need
-        // 38 MCUs per row, so compressed blocks and their order stay intact.
-        if (components != 3 || data[offset + 9] != 0x21 ||
-            data[offset + 12] != 0x11 || data[offset + 15] != 0x11 ||
-            (width + 15) / 16 != (kCameraWidth + 15) / 16) return false;
-        data[offset + 5] = kCameraWidth >> 8;
-        data[offset + 6] = kCameraWidth & 0xff;
+      if (width == 0 || height == 0 || (sPortraitCapture ? width >= height : width <= height) ||
+          width > sSensorMaxWidth || height > sSensorMaxHeight) {
+        if (diagnostics) diagnostics->reason = "Unexpected encoded dimensions";
+        return false;
       }
+      uint8_t maxHorizontal = 1, maxVertical = 1, blocks = 0;
+      for (uint8_t i = 0; i < components; ++i) {
+        const uint8_t sampling = data[offset + 9 + 3 * i];
+        const uint8_t horizontal = sampling >> 4;
+        const uint8_t vertical = sampling & 0x0f;
+        if (horizontal == 0 || horizontal > 4 || vertical == 0 || vertical > 4) {
+          if (diagnostics) diagnostics->reason = "Invalid JPEG sampling factors";
+          return false;
+        }
+        if (horizontal > maxHorizontal) maxHorizontal = horizontal;
+        if (vertical > maxVertical) maxVertical = vertical;
+        blocks += horizontal * vertical;
+        if (blocks > 10) {
+          if (diagnostics) diagnostics->reason = "Invalid JPEG sampling factors";
+          return false;
+        }
+      }
+      if (width % (8 * maxHorizontal) != 0 || height % (8 * maxVertical) != 0) {
+        if (diagnostics) diagnostics->reason = "Unaligned sensor JPEG dimensions";
+        return false;
+      }
+      // Use an aligned native frame as-is. The OV3660's known 608 x 800
+      // interleaved 4:2:2 profile can hide eight edge pixels without changing
+      // its MCU row length; other sizes and formats retain their own header.
+      uint16_t outputWidth = width;
+      if (sPortraitCapture && width == kPortraitJpegWidth && height == kCameraPortraitHeight && components == 3 &&
+          data[offset + 9] == 0x21 && data[offset + 12] == 0x11 && data[offset + 15] == 0x11 &&
+          (width + 15) / 16 == (kCameraPortraitWidth + 15) / 16) outputWidth = kCameraPortraitWidth;
+      if (sGeometry.encodedWidth != 0 && (width != sGeometry.encodedWidth ||
+          height != sGeometry.height || outputWidth != sGeometry.outputWidth)) {
+        if (diagnostics) diagnostics->reason = "JPEG geometry changed after startup";
+        return false;
+      }
+      if (outputWidth != width) {
+        data[offset + 5] = outputWidth >> 8;
+        data[offset + 6] = outputWidth & 0xff;
+      }
+      if (sGeometry.encodedWidth == 0) {
+        sGeometry.encodedWidth = width;
+        sGeometry.height = height;
+        sGeometry.outputWidth = outputWidth;
+      }
+      if (diagnostics) diagnostics->reason = nullptr;
       return true;
     }
     offset += length;
@@ -141,55 +210,137 @@ bool preparePortraitJpeg(camera_fb_t& frame) {
   return false;
 }
 
-bool configurePortraitSensor() {
+void logOv2640Registers(sensor_t* sensor) {
+  if (sensor->id.PID != OV2640_PID || !sensor->get_reg) return;
+  // get_reg encodes the bank in bit 8: 00xx = DSP, 01xx = sensor.
+  const uint16_t registers[] = {0x0051, 0x0052, 0x0053, 0x0054, 0x0055, 0x0057,
+      0x005a, 0x005b, 0x005c, 0x00c0, 0x00c1, 0x00d3, 0x00da, 0x00e0, 0x0112, 0x0111};
+  Serial.println("OV2640 register readback (00xx DSP, 01xx sensor):");
+  for (size_t i = 0; i < sizeof(registers) / sizeof(registers[0]); ++i) {
+    const int value = sensor->get_reg(sensor, registers[i], 0xff);
+    Serial.printf("%04x=%02x%s", static_cast<unsigned>(registers[i]),
+                  static_cast<unsigned>(value), (i + 1) % 8 == 0 ? "\n" : " ");
+  }
+}
+
+bool configureCameraSensor() {
+  sGeometry = JpegGeometry();
   sensor_t* sensor = esp_camera_sensor_get();
   if (!sensor) {
     Serial.println("Camera driver did not expose a sensor");
     return false;
   }
   Serial.printf("Camera sensor PID: 0x%04x\n", static_cast<unsigned>(sensor->id.PID));
-  if (!sensor->set_res_raw || !sensor->set_quality) {
-    Serial.println("Camera driver does not support a custom JPEG window");
+  if (!sensor->set_quality) {
+    Serial.println("Camera driver does not support JPEG quality configuration");
     return false;
   }
   int result = -1;
   switch (sensor->id.PID) {
     case OV2640_PID:
-      Serial.println("Configuring OV2640 native portrait capture");
-      sSensorCaptureWidth = kCameraWidth;
-      // For OV2640, startX selects the sensor mode: 0 = UXGA. Centre a
-      // 900 x 1200 DSP window and scale by 2/3, preserving proportions.
-      result = sensor->set_res_raw(sensor, 0, 0, 0, 0, 350, 0, 900, 1200,
-                                   kCameraWidth, kCameraHeight, true, false);
+      Serial.println("Configuring OV2640 normal landscape capture (800 x 600)");
+      sPortraitCapture = false;
+      sSensorMaxWidth = 1600;
+      sSensorMaxHeight = 1200;
+      // Use the SDK's standard SVGA readout and full landscape field of view.
+      if (!sensor->set_framesize) {
+        Serial.println("OV2640 driver does not support standard frame sizes");
+        return false;
+      }
+      result = sensor->set_framesize(sensor, FRAMESIZE_SVGA);
+      // set_window internally reapplies JPEG mode but ignores that call's
+      // return value. Check it explicitly before trusting captured frames.
+      if (result == 0 && (!sensor->set_pixformat || sensor->set_pixformat(sensor, PIXFORMAT_JPEG) != 0)) {
+        Serial.println("OV2640 JPEG mode reset failed");
+        logOv2640Registers(sensor);
+        return false;
+      }
       break;
     case OV3660_PID:
       Serial.println("Configuring OV3660 native portrait capture");
-      sSensorCaptureWidth = kOv3660JpegWidth;
+      sPortraitCapture = true;
+      sSensorMaxWidth = 2048;
+      sSensorMaxHeight = 1536;
+      if (!sensor->set_res_raw) {
+        Serial.println("OV3660 driver does not support a custom JPEG window");
+        return false;
+      }
       // OV3660 takes actual start/end coordinates, including its 16/6-pixel
       // border on each side. Centre a 1168 x 1536 active window in 2048 x 1536.
       // Use the SDK's square/portrait line timings, scaling without binning:
       // half-height binning would leave only 768 rows for an 800-row output.
       // Encode 608 x 800 with full MCU columns, then hide eight edge pixels.
       result = sensor->set_res_raw(sensor, 440, 0, 1639, 1547, 16, 6, 2044, 1564,
-                                   sSensorCaptureWidth, kCameraHeight, true, false);
+                                   kPortraitJpegWidth, kCameraPortraitHeight, true, false);
       break;
     default:
-      Serial.println("Native portrait capture is configured for OV2640 and OV3660 sensors");
+      Serial.println("Camera capture is configured for OV2640 and OV3660 sensors");
       return false;
   }
   if (result != 0 || sensor->set_quality(sensor, kJpegQuality) != 0) {
-    Serial.println("Unable to configure the native portrait sensor window");
+    Serial.println("Unable to configure the camera sensor");
+    logOv2640Registers(sensor);
     return false;
   }
-  // The driver started before the window changed. Discard queued old frames
-  // and confirm the actual encoded dimensions before starting either worker.
-  for (uint8_t attempt = 0; attempt < 4; ++attempt) {
+  // The driver started before sensor reconfiguration. Its queued XGA frames
+  // can also be landscape; discard the initial buffers before size discovery.
+  // Then require two matching frames before freezing the native dimensions.
+  constexpr uint8_t attempts = 6;
+  uint8_t discardedFrames = 0;
+  uint8_t matchingFrames = 0;
+  JpegGeometry previous;
+  for (uint8_t attempt = 0; attempt < attempts; ++attempt) {
+    sGeometry = JpegGeometry();  // Size discovery is allowed only during startup.
+    const uint32_t startedAt = millis();
     camera_fb_t* frame = esp_camera_fb_get();
-    const bool valid = frame && frame->format == PIXFORMAT_JPEG && preparePortraitJpeg(*frame);
+    const uint32_t elapsed = millis() - startedAt;
+    if (discardedFrames < kDriverFrameBuffers && frame) {
+      ++discardedFrames;
+      esp_camera_fb_return(frame);
+      Serial.printf("Camera warm-up %u/%u: discarded initial framebuffer\n",
+                    static_cast<unsigned>(attempt + 1), static_cast<unsigned>(attempts));
+      continue;
+    }
+    JpegDiagnostics diagnostics;
+    const bool valid = frame && frame->format == PIXFORMAT_JPEG && prepareCameraJpeg(*frame, &diagnostics);
+    if (!frame) {
+      Serial.printf("Camera warm-up %u/%u: no framebuffer after %lu ms\n",
+                    static_cast<unsigned>(attempt + 1), static_cast<unsigned>(attempts), static_cast<unsigned long>(elapsed));
+    } else if (frame->format != PIXFORMAT_JPEG) {
+      Serial.printf("Camera warm-up %u/%u: non-JPEG format %d, %u bytes, %lu ms\n",
+                    static_cast<unsigned>(attempt + 1), static_cast<unsigned>(attempts), static_cast<int>(frame->format),
+                    static_cast<unsigned>(frame->len), static_cast<unsigned long>(elapsed));
+    } else if (!valid) {
+      Serial.printf("Camera warm-up %u/%u: %s; SOF 0x%02x, %u x %u, components %u, sampling %02x/%02x/%02x, %u bytes, %lu ms\n",
+          static_cast<unsigned>(attempt + 1), static_cast<unsigned>(attempts), diagnostics.reason,
+          static_cast<unsigned>(diagnostics.sofMarker), diagnostics.width, diagnostics.height,
+          static_cast<unsigned>(diagnostics.components), static_cast<unsigned>(diagnostics.sampling[0]),
+          static_cast<unsigned>(diagnostics.sampling[1]), static_cast<unsigned>(diagnostics.sampling[2]),
+          static_cast<unsigned>(frame->len), static_cast<unsigned long>(elapsed));
+    }
     if (frame) esp_camera_fb_return(frame);
-    if (valid) return true;
+    if (valid) {
+      if (sGeometry.encodedWidth == previous.encodedWidth && sGeometry.height == previous.height &&
+          sGeometry.outputWidth == previous.outputWidth) ++matchingFrames;
+      else matchingFrames = 1;
+      previous = sGeometry;
+      if (matchingFrames < 2) {
+        Serial.printf("Camera warm-up %u/%u: candidate %u x %u, waiting for a matching frame\n",
+            static_cast<unsigned>(attempt + 1), static_cast<unsigned>(attempts), diagnostics.width, diagnostics.height);
+        continue;
+      }
+      {
+        MediaLock lock;
+        sStatus.width = sGeometry.outputWidth;
+        sStatus.height = sGeometry.height;
+      }
+      Serial.printf("Camera JPEG confirmed: sensor %u x %u, output %u x %u\n",
+          diagnostics.width, diagnostics.height, sGeometry.outputWidth, sGeometry.height);
+      return true;
+    } else matchingFrames = 0;
   }
-  Serial.printf("Camera did not produce %u x %u JPEG frames\n", kCameraWidth, kCameraHeight);
+  Serial.println("Camera did not produce stable aligned JPEGs in the requested orientation");
+  logOv2640Registers(sensor);
   return false;
 }
 
@@ -218,7 +369,7 @@ void captureTask(void*) {
     if (frame) {
       camera_fb_t* fb = esp_camera_fb_get();
       const bool oversized = fb && fb->format == PIXFORMAT_JPEG && fb->len > kFrameCapacity;
-      if (!fb || fb->format != PIXFORMAT_JPEG || oversized || !preparePortraitJpeg(*fb)) {
+      if (!fb || fb->format != PIXFORMAT_JPEG || oversized || !prepareCameraJpeg(*fb)) {
         if (fb) esp_camera_fb_return(fb);
         releaseFrame(frame);
         {
@@ -515,7 +666,7 @@ bool initCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = kCameraBufferFrameSize;
   config.jpeg_quality = kJpegQuality;
-  config.fb_count = 2;
+  config.fb_count = kDriverFrameBuffers;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
 
@@ -525,7 +676,7 @@ bool initCamera() {
     releasePipelineResources();
     return false;
   }
-  if (!configurePortraitSensor()) {
+  if (!configureCameraSensor()) {
     esp_camera_deinit();
     releasePipelineResources();
     return false;
@@ -541,7 +692,7 @@ bool initCamera() {
   xTaskNotifyGive(sCaptureTask);
   xTaskNotifyGive(sWriterTask);
   Serial.printf("Camera ready: %u x %u JPEG, target 20 FPS, bounded PSRAM pipeline\n",
-                kCameraWidth, kCameraHeight);
+                sGeometry.outputWidth, sGeometry.height);
   Serial.println("Media workers: capture/preview core 1, SD writer core 0 with 8 KiB DMA staging");
   return true;
 }
