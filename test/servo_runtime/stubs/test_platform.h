@@ -18,13 +18,6 @@ extern SerialStub Serial;
 uint32_t millis();
 uint32_t esp_random();
 
-class Preferences {
- public:
-  String getString(const char* key, const char* fallback);
-  size_t putString(const char* key, const String& value);
-};
-extern Preferences preferences;
-
 constexpr int WL_DISCONNECTED = 6;
 constexpr int WL_CONNECTED = 3;
 struct WiFiStub {

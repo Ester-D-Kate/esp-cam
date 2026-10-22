@@ -27,7 +27,6 @@ esp_mqtt_client_handle_t activeClient = nullptr;
 esp_mqtt_client_config_t mqttConfig{};
 String subscribedTopic;
 int subscribedQos = -1;
-const char* identity = "0123456789abcdef0123456789abcdef";
 
 void expect(bool condition, const char* description) {
   if (!condition) {
@@ -94,15 +93,10 @@ void expectRetryAfterFiveSeconds() {
 }  // namespace
 
 SerialStub Serial;
-Preferences preferences;
 WiFiStub WiFi;
 
 uint32_t millis() { return now; }
 uint32_t esp_random() { return 0x12345678; }
-String Preferences::getString(const char* key, const char* fallback) {
-  return std::strcmp(key, "servo_id") == 0 ? identity : fallback;
-}
-size_t Preferences::putString(const char*, const String& value) { return value.length(); }
 
 esp_err_t ledc_timer_config(const ledc_timer_config_t* config) {
   timers.push_back(*config);
@@ -172,8 +166,8 @@ int main() {
          "servo MQTT connects to the public HiveMQ endpoint");
   event(MQTT_EVENT_CONNECTED);
   expect(!servoStatus().mqttConnected, "connection waits for subscription acknowledgement");
-  expect(subscribedTopic == "esp32cam/0123456789abcdef0123456789abcdef/servo/delta" &&
-         subscribedQos == 0, "subscription uses the persisted device identity with QoS zero");
+  expect(subscribedTopic == "esp32cam/kate/servo/delta" &&
+         subscribedQos == 0, "subscription uses the fixed command topic with QoS zero");
   const char granted = 0;
   event(MQTT_EVENT_SUBSCRIBED, lastSubscriptionId + 100, &granted, 1);
   expect(!servoStatus().mqttConnected, "unrelated subscription acknowledgement is ignored");

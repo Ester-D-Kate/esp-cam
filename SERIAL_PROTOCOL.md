@@ -4,7 +4,7 @@
 
 ## Servo commands
 
-The device subscribes to the public, unauthenticated broker **`broker.hivemq.com:1883`**. Its dedicated command topic is **`esp32cam/<random32hex>/servo/delta`**. Copy the exact topic printed at startup or returned by `/status` as `servoTopic`; the random device identifier is saved in preferences. If saving fails, startup logs a warning and the topic may change after a reboot. This topic is separate from the optional gyro topic `eyetracker/<uuid>/gyro`. Anyone who knows a topic on this public broker can publish to it; use the device's dedicated topic.
+The device subscribes to the public, unauthenticated broker **`broker.hivemq.com:1883`** on the fixed command topic **`esp32cam/kate/servo/delta`**. The broker host, port and command topic are constants in `src/mqtt_config.h`; the command topic stays the same across restarts. This is separate from the optional gyro telemetry topic `eyetracker/<uuid>/gyro`. Anyone can publish to the fixed servo topic through this public broker, so it does not provide access control.
 
 Publish one JSON object containing literal `"x"`, `"y"`, or both. Values are signed integer **degree deltas**, each in the signed 32-bit range (`-2147483648` through `2147483647`). An omitted axis holds its current position. For example, `{"x":10,"y":-5}` adds 10° to X and subtracts 5° from Y. Every command clamps each resulting angle to **0–180°** without integer overflow.
 
@@ -13,11 +13,9 @@ Both axes start at **90° on every boot**, after camera initialization and befor
 Use **QoS 0, nonretained** messages with payloads of **at most 128 bytes**. Malformed JSON, empty commands, unknown or duplicate fields, noninteger/out-of-range values, fragmented messages and deliveries marked retained are rejected. Send normal JSON integer syntax (`5`, `-5`, `0`), without a leading `+`, decimal point or exponent. Rejected commands do not change either axis. Do not use retained commands or QoS 1/2. There is no command acknowledgement, replay queue or deduplication of separately published identical payloads; publishing the same delta twice moves twice. Check the current angles through `/status`.
 
 ```sh
-# Replace with the exact topic from the device startup log or /status.
-SERVO_TOPIC='esp32cam/0123456789abcdef0123456789abcdef/servo/delta'
-mosquitto_pub -h broker.hivemq.com -p 1883 -q 0 -t "$SERVO_TOPIC" -m '{"x":10,"y":-5}'
-mosquitto_pub -h broker.hivemq.com -p 1883 -q 0 -t "$SERVO_TOPIC" -m '{"x":-20}'
-mosquitto_pub -h broker.hivemq.com -p 1883 -q 0 -t "$SERVO_TOPIC" -m '{"y":5}'
+mosquitto_pub -h broker.hivemq.com -p 1883 -q 0 -t 'esp32cam/kate/servo/delta' -m '{"x":10,"y":-5}'
+mosquitto_pub -h broker.hivemq.com -p 1883 -q 0 -t 'esp32cam/kate/servo/delta' -m '{"x":-20}'
+mosquitto_pub -h broker.hivemq.com -p 1883 -q 0 -t 'esp32cam/kate/servo/delta' -m '{"y":5}'
 ```
 
 The examples intentionally omit `-r`. Retained replay on subscription is rejected, but MQTT 3.1.1 can clear the retain flag on live delivery; the publisher must always use retain=false. Small steps allow you to check axis direction before approaching either end of travel. QoS 0 commands can be lost during outages; a reconnect does not replay missed commands.

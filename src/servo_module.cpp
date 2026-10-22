@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <Preferences.h>
 #include <WiFi.h>
 #include "servo_module.h"
 #include "servo_command.h"
@@ -8,8 +7,6 @@
 #include <esp_random.h>
 #include <mqtt_client.h>
 #include <atomic>
-
-extern Preferences preferences;
 
 namespace {
 constexpr int kServoXPin = 14;
@@ -25,7 +22,6 @@ constexpr ledc_mode_t kServoSpeedMode = LEDC_HIGH_SPEED_MODE;
 constexpr ledc_timer_t kServoTimer = LEDC_TIMER_1;
 constexpr ledc_channel_t kServoXChannel = LEDC_CHANNEL_2;
 constexpr ledc_channel_t kServoYChannel = LEDC_CHANNEL_3;
-constexpr char kIdentityKey[] = "servo_id";
 static_assert(kServoMinPulseUs < kServoMaxPulseUs && kServoMaxPulseUs < kServoPeriodUs,
               "Servo pulse range must fit within a PWM period");
 
@@ -41,7 +37,6 @@ esp_mqtt_client_handle_t sClient = nullptr;
 int sSubscriptionId = -1;  // Accessed only by the MQTT event task.
 uint32_t sLastMqttAttemptAt = 0;
 bool sMqttAttempted = false;
-char sTopic[80] = {};
 char sClientId[32] = {};
 
 const char* errorMessage(ServoError error) {
@@ -86,32 +81,11 @@ bool initializePwm() {
   return true;
 }
 
-bool validIdentity(const String& identity) {
-  if (identity.length() != 32) return false;
-  for (size_t i = 0; i < identity.length(); ++i) {
-    const char c = identity[i];
-    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
-  }
-  return true;
-}
-
-void initializeTopic() {
-  String identity = preferences.getString(kIdentityKey, "");
-  if (!validIdentity(identity)) {
-    char generated[33];
-    snprintf(generated, sizeof(generated), "%08lx%08lx%08lx%08lx",
-        static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()),
-        static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()));
-    identity = generated;
-    if (preferences.putString(kIdentityKey, identity) != identity.length()) {
-      Serial.println("Servo topic ID could not be saved; the topic may change after reboot");
-    }
-  }
-  snprintf(sTopic, sizeof(sTopic), "esp32cam/%s/servo/delta", identity.c_str());
+void initializeMqttClientId() {
   snprintf(sClientId, sizeof(sClientId), "servo-%08lx%08lx",
       static_cast<unsigned long>(esp_random()), static_cast<unsigned long>(esp_random()));
   Serial.printf("Servo MQTT: %s:%u, command topic: %s\n",
-      kPublicMqttBrokerHost, kPublicMqttBrokerPort, sTopic);
+      kPublicMqttBrokerHost, kPublicMqttBrokerPort, kServoCommandTopic);
 }
 
 bool moveAxis(ledc_channel_t channel, int32_t delta, int& position) {
@@ -126,7 +100,7 @@ bool moveAxis(ledc_channel_t channel, int32_t delta, int& position) {
 void receiveCommand(esp_mqtt_event_handle_t event) {
   servo::Delta delta;
   if (!sMqttConnected.load() ||
-      !servo::acceptsMessage(sTopic, event->topic, event->topic_len, event->data_len,
+      !servo::acceptsMessage(kServoCommandTopic, event->topic, event->topic_len, event->data_len,
                             event->total_data_len, event->current_data_offset, event->retain) ||
       !servo::parseDelta(event->data, event->data_len, delta)) {
     sRejectedCommands.fetch_add(1);
@@ -147,7 +121,7 @@ esp_err_t mqttEvent(esp_mqtt_event_handle_t event) {
     case MQTT_EVENT_CONNECTED:
       sMqttConnected.store(false);
       sRestartRequested.store(false);
-      sSubscriptionId = esp_mqtt_client_subscribe(event->client, sTopic, 0);
+      sSubscriptionId = esp_mqtt_client_subscribe(event->client, kServoCommandTopic, 0);
       if (sSubscriptionId < 0) {
         sError.store(ServoError::MqttSubscribe);
         sRestartRequested.store(true);
@@ -183,7 +157,7 @@ esp_err_t mqttEvent(esp_mqtt_event_handle_t event) {
 bool servoBegin() {
   if (sInitialized) return sReady;
   sInitialized = true;
-  initializeTopic();
+  initializeMqttClientId();
   sReady = initializePwm();
   if (!sReady) {
     sError.store(ServoError::PwmInit);
@@ -239,4 +213,4 @@ ServoStatus servoStatus() {
           sRejectedCommands.load(), errorMessage(sError.load())};
 }
 
-const char* servoCommandTopic() { return sTopic; }
+const char* servoCommandTopic() { return kServoCommandTopic; }
