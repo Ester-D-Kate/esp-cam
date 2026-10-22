@@ -54,7 +54,7 @@ Gyro authentication is optional; its failure does not prevent camera, Wi-Fi or s
 
 ## Status and validation
 
-`/status` and the viewer report `servoReady`, `servoMqttConnected`, `servoX`, `servoY`, `servoTopic`, `servoError` and `servoRejectedCommands`. `servoReady` describes PWM setup; `servoMqttConnected` indicates subscription readiness. `recordingEnabled` and `sdReady` are always false. Legacy recording counters remain present for client compatibility and stay zero. Camera capture/preview counts, dimensions, errors and free heap/PSRAM remain available.
+`/status` and the viewer report `servoReady`, `servoMqttConnected`, `servoX`, `servoY`, `servoTopic`, `servoError` and `servoRejectedCommands`. The serial monitor logs each received servo command with its deltas and resulting positions; rejected commands and PWM failures are logged too. `servoReady` describes PWM setup; `servoMqttConnected` indicates subscription readiness. `recordingEnabled` and `sdReady` are always false. Legacy recording counters remain present for client compatibility and stay zero. Camera capture/preview counts, dimensions, errors and free heap/PSRAM remain available.
 
 Build the pinned `espressif32@7.1.3` environment:
 

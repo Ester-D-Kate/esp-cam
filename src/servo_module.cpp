@@ -99,11 +99,23 @@ bool moveAxis(ledc_channel_t channel, int32_t delta, int& position) {
 
 void receiveCommand(esp_mqtt_event_handle_t event) {
   servo::Delta delta;
-  if (!sMqttConnected.load() ||
-      !servo::acceptsMessage(kServoCommandTopic, event->topic, event->topic_len, event->data_len,
-                            event->total_data_len, event->current_data_offset, event->retain) ||
-      !servo::parseDelta(event->data, event->data_len, delta)) {
+  if (!sMqttConnected.load()) {
     sRejectedCommands.fetch_add(1);
+    Serial.printf("Servo MQTT message received but rejected (%d bytes): subscription not ready\n",
+                  event->data_len);
+    return;
+  }
+  if (!servo::acceptsMessage(kServoCommandTopic, event->topic, event->topic_len, event->data_len,
+                            event->total_data_len, event->current_data_offset, event->retain)) {
+    sRejectedCommands.fetch_add(1);
+    Serial.printf("Servo MQTT message received but rejected (%d bytes): invalid topic, retained, fragmented or oversized\n",
+                  event->data_len);
+    return;
+  }
+  if (!servo::parseDelta(event->data, event->data_len, delta)) {
+    sRejectedCommands.fetch_add(1);
+    Serial.printf("Servo MQTT message received but rejected (%d bytes): invalid JSON command\n",
+                  event->data_len);
     return;
   }
   const uint32_t positions = sPositions.load();
@@ -114,6 +126,13 @@ void receiveCommand(esp_mqtt_event_handle_t event) {
   const bool yUpdated = moveAxis(kServoYChannel, delta.y, y);
   sPositions.store(static_cast<uint32_t>(x | (y << 8)));
   sError.store(xUpdated && yUpdated ? ServoError::None : ServoError::PwmWrite);
+  if (xUpdated && yUpdated) {
+    Serial.printf("Servo MQTT command received and applied: dx=%+ld dy=%+ld -> X=%d Y=%d\n",
+                  static_cast<long>(delta.x), static_cast<long>(delta.y), x, y);
+  } else {
+    Serial.printf("Servo MQTT command received but PWM update failed: dx=%+ld dy=%+ld -> X=%d Y=%d\n",
+                  static_cast<long>(delta.x), static_cast<long>(delta.y), x, y);
+  }
 }
 
 esp_err_t mqttEvent(esp_mqtt_event_handle_t event) {
