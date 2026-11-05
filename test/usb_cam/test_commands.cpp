@@ -34,14 +34,16 @@ int main() {
   auto before = c;
   assert(apply_command("set pll_multiplier 15", c, USB_CAM_PROFILE_OV3660) == CommandResult::Invalid);
   assert(config_equal(c, before));
-  assert(apply_command("set pclk_div 31", c, USB_CAM_PROFILE_OV3660) == CommandResult::Changed);
+  assert(apply_command("set pclk_div 31", c, USB_CAM_PROFILE_OV3660) == CommandResult::Invalid);
+  assert(apply_command("set pclk_div 12", c, USB_CAM_PROFILE_OV3660) == CommandResult::Changed);
   assert(apply_command("set pclk_div 2", c, USB_CAM_PROFILE_OV3660) == CommandResult::Invalid);
   assert(apply_command("set pll_pre_div 4", c, USB_CAM_PROFILE_OV3660) == CommandResult::Invalid);
   assert(apply_command("set pll_multiplier 0", c, USB_CAM_PROFILE_OV3660) == CommandResult::Changed);
   assert(!c.pll.multiplier);
-  c = mode_config(11, USB_CAM_INTERVAL(5), USB_CAM_PROFILE_OV3660);
+  assert(apply_command("set pll_root_2x 1", c, USB_CAM_PROFILE_OV3660) == CommandResult::Invalid);
+  c = mode_config(10, USB_CAM_INTERVAL(5), USB_CAM_PROFILE_OV3660);
   c.quality = 50;
   assert(apply_command("defaults", c, USB_CAM_PROFILE_OV3660) == CommandResult::Changed);
-  assert(c.width == 2048 && c.quality == 32 && !c.pll.multiplier);
+  assert(c.width == 1920 && c.quality == 28 && c.pll.multiplier == 16 && c.pll.pre_div == 1);
   puts("Command tests passed: limits, atomic validation and overflow recovery.");
 }

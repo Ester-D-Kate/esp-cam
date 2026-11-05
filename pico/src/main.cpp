@@ -248,7 +248,7 @@ int main() {
         // Only select a different bank after hardware and class DMA are stopped.
         usb_cam_usb_select_profile(next_profile);
         const uint32_t generation = desired.generation + 1;
-        desired = usb_cam::Config{};
+        desired = usb_cam::profile_defaults(next_profile);
         desired.generation = generation;
         selected_mode = next_profile == USB_CAM_PROFILE_DISCOVERY ? 0 : USB_CAM_DEFAULT_MODE;
         custom_quality = false;

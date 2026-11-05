@@ -11,7 +11,7 @@ static uint32_t le32(const uint8_t* p) {
 static void check_profile(UsbCamProfile profile) {
   usb_cam_usb_select_profile(profile);
   const unsigned expected = profile == USB_CAM_PROFILE_DISCOVERY ? 0 :
-      profile == USB_CAM_PROFILE_OV3660 ? 11 : 9;
+      profile == USB_CAM_PROFILE_OV3660 ? 10 : 9;
   const tusb_desc_device_t* device = (const tusb_desc_device_t*)tud_descriptor_device_cb();
   assert(device->idProduct == 0x4050 + (unsigned)profile);
   const uint8_t* config = tud_descriptor_configuration_cb(0);
@@ -40,14 +40,14 @@ static void check_profile(UsbCamProfile profile) {
                interface_subclass == VIDEO_SUBCLASS_STREAMING && d[2] == VIDEO_CS_ITF_VS_FRAME_MJPEG) {
       ++video_frames;
       static const unsigned sizes[][2] = {{640,480},{800,600},{1280,720},{320,240},
-          {160,120},{480,320},{1024,768},{1280,1024},{1600,1200},{1920,1080},{2048,1536}};
+          {160,120},{480,320},{1024,768},{1280,1024},{1600,1200},{1920,1080}};
       assert(d[3] == video_frames && video_frames <= expected);
       assert(le16(d + 5) == sizes[video_frames - 1][0]);
       assert(le16(d + 7) == sizes[video_frames - 1][1]);
       assert(le32(d + 17) == 65536);
       // UXGA may send 65536 bytes per 666666 * 100 ns. Advertise the
       // corresponding maximum rounded up, rather than the old 720 KiB/s cap.
-      assert(le32(d + 13) == (video_frames == 9 ? 7864328u : video_frames == 10 ? 5242880u : video_frames == 11 ? 5242880u : 5898240u));
+      assert(le32(d + 13) == (video_frames >= 9 ? 7864328u : 5898240u));
       assert(d[25] >= 2 && d[0] == 26 + d[25] * 4);
       uint32_t previous = 0;
       for (unsigned n = 0; n < d[25]; ++n) {

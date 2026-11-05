@@ -10,7 +10,7 @@ inline CommandResult apply_command(const char* line, Config& current, UsbCamProf
   if (strcmp(line, "status") == 0) return CommandResult::Status;
   Config next = current;
   if (strcmp(line, "defaults") == 0) {
-    next = Config{};
+    next = profile_defaults(profile);
     next.width = current.width; next.height = current.height;
     next.interval_100ns = current.interval_100ns; next.max_jpeg = current.max_jpeg;
     for (unsigned i = 1; i <= usb_cam_profile_count(profile); ++i) {

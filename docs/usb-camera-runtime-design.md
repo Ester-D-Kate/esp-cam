@@ -162,34 +162,40 @@ diagnostic names and test harness structure are delegated to the builder.
 
 Kate authorized sensor-specific behavior, automatic detection and a matching USB
 menu. Preserve OV2640's nine modes and driver timing. Detect OV3660 by PID 0x3660;
-only the upgraded ESP capability bit enables its additional 1920x1080 and
-2048x1536 modes. Their candidate requested rates are 5/10 FPS, with 5 FPS default
-for 3 MP. Existing modes retain their requested rates until measurements justify
-a change; the diagnostic build also tries 60 FPS VGA and 30 FPS HD/XGA on OV3660.
-These are unvalidated requests, not promises of delivered performance.
+only the upgraded ESP capability bit enables its additional 1920x1080 mode and
+calibrated PLL preset. Hardware trials rejected 2048x1536: frames repeatedly
+exceeded the fixed 64 KiB limit even at quality 50. Keep that source geometry
+available for future capacity work, but omit it from UVC. Measured readout limits
+justify OV3660 requests up to 30 FPS for small/VGA/SVGA/XGA sizes, 20 FPS for
+HD, and 15 FPS for SXGA/UXGA/FHD. These are requested ceilings, not guarantees.
+All Pico variants share this OV3660 menu; preserve OV2640's experimental small
+60 FPS requests only in fast/diagnostic builds.
 
 Start with a CDC-only discovery USB device. Once a CRC-valid ESP status identifies
 a supported sensor, detach/deinitialize USB, release owned video memory, choose
 immutable sensor-specific descriptors, and enumerate with a distinct USB PID and
 sensor name. Legacy ESP firmware gets the original nine-mode menu and no extended
 controls. Unknown sensors remain diagnostic-only. Identity changes reset desired
-state to VGA and clear sensor-specific overrides. A transient lack of packets
+state to VGA with the selected sensor's preset and clear user overrides. A transient lack of packets
 does not change descriptors. Sensor swaps require power off.
 
-Extend the existing v2 packets using previously reserved bytes: default commands
-remain byte-identical; the new header advertises capability bit 0. A new Pico
+Extend the existing v2 packets using previously reserved bytes: discovery and
+legacy defaults remain byte-identical; the new header advertises capability bit 0. A new Pico
 reads old headers, but the old Pico cannot read extended headers, so install the
 new Pico before the new ESP. Keep 64 KiB frame slots and 8 MHz SPI. Full-resolution
-modes use the entire slot; high-detail 3 MP scenes may still exceed it. Allocate
+modes use the entire slot; detailed scenes may still exceed it. Allocate
 ESP camera buffers for QXGA once; the driver clamps allocation to OV2640's maximum.
 
 Expose optional OV3660 PLL controls through Pico CDC, with multiplier 0 meaning
-SDK defaults. Bound register fields and computed VCO (150–500 MHz), SYSCLK
-(<=54 MHz), and PCLK (<=10 MHz). Reject unsupported sensor/configuration before
+SDK defaults. Bound register fields, PLL reference (4–13.5 MHz), VCO (150–500 MHz),
+SYSCLK (<=54 MHz), and PCLK (8–10 MHz). Reject root_2x because the pinned callback
+writes reserved bit 6 instead of root-divider bit 2. Reject unsupported sensor/configuration before
 any sensor writes. Apply PLL after geometry because the SDK overwrites it there;
-returning to defaults reprograms geometry. Never apply these controls to OV2640.
-This is a tuning facility, not an untested automatic overclock. Keep XCLK 20 MHz
-and SDK timings as defaults until live comparisons show an improvement. Preserve
+returning to SDK timing reprograms geometry. Never apply these controls to OV2640.
+Live comparisons selected XCLK20, multiplier16/predivider1/system-divider1,
+root0/seld5=0/PCLK-divider11: SYSCLK53.33 MHz/PCLK9.70 MHz. Use this only on
+upgraded OV3660. UXGA/FHD start at quality28 to reduce transport bottlenecks.
+CDC `defaults` restores this sensor preset and per-mode quality. Preserve
 these controls across OBS commits. Failed timing writes stop publishing frames
 and remain recoverable via a new Pico request. Arbitrary register writes and
 unverified crop recipes remain excluded.

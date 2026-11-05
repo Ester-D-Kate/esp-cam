@@ -50,9 +50,10 @@ For a full-size Raspberry Pi Pico use `pico_camera` instead of `zero_camera`.
 The native Pico SDK platform, GCC toolchain and TinyUSB remain pinned in the
 PlatformIO files. The older fixed-resolution environments live in the checkpoint.
 
-The ESP32 firmware supports all SDK JPEG geometries through
-1600x1200 and the controls below. Later Pico firmware can adjust its menus,
-requested rates and default settings within this contract.
+The ESP32 firmware accepts SDK JPEG geometries through 2048x1536, subject to the
+detected sensor and 64 KiB transport limit. The Pico advertises only the tested
+subset: through 1600x1200 for OV2640 and 1920x1080 for OV3660. Later Pico firmware
+can adjust menus, requested rates and settings within this contract.
 
 1. Update Pico first: enter BOOTSEL (hold BOOT, tap RESET, release BOOT), then run
    `pio run -d pico -e zero_camera -t upload`. The new Pico reads both the earlier
@@ -79,13 +80,17 @@ ESP contract can still require a future ESP upload.
 
 ## OBS resolution and FPS choices
 
-Select **MJPEG Video** / **ESP32 POV Camera** as the video device. Where the host
+Select **OV2640 MJPEG Video** or **OV3660 MJPEG Video**, matching the fitted sensor.
+Older firmware may show **MJPEG Video** / **ESP32 POV Camera**. Where the host
 application offers it, use custom resolution/FPS rather than a fixed preset.
 Changing a mode briefly pauses capture while the real sensor is reconfigured.
 Use one capture application at a time when validating modes. In the hardware
 tests, OBS changed the format while FFmpeg was capturing, causing mismatched
 frame sizes and macOS device-configuration lock errors. Closing OBS allowed all
 ten repeated open/change/close tests to pass without a firmware change.
+
+The following table is the preserved OV2640/legacy menu. The calibrated OV3660
+menu and measured results are in the sensor-profile section below.
 
 | Resolution | Available requested FPS |
 |---|---|
@@ -124,7 +129,7 @@ These bench results do not certify a moving POV scene or constant FPS in all lig
 
 JPEG data stays compressed from the sensor to USB. Three fixed 64 KiB buffers
 bound Pico RAM. The selected interval also sets a conservative 720 KiB/s frame
-budget, except UXGA, which always uses the full 64 KiB slot. If a frame exceeds
+budget, except UXGA/FHD, which always use the full 64 KiB slot. If a frame exceeds
 its budget, it is counted and compression increases
 (up to quality value 50). Smaller quality numbers mean better JPEG quality.
 Changing modes resets to that mode's default unless an explicit quality override
@@ -156,8 +161,8 @@ set brightness default
 defaults
 ```
 
-`default` clears an individual optional setting. `defaults` restores driver
-settings and the selected mode's JPEG quality, preserving the host's selected
+`default` clears an individual optional setting. `defaults` restores the sensor
+preset (including calibrated OV3660 timing) and the selected mode's JPEG quality, preserving the host's selected
 resolution/FPS. Commands are validated before changing desired state. Settings
 are held in RAM and reset on Pico reboot. Edit the Pico's defaults if persistence
 across power cycles is needed; ESP firmware stays the same.
@@ -165,7 +170,7 @@ across power cycles is needed; ESP firmware stays the same.
 | Setting | Accepted values |
 |---|---|
 | `quality` | 0–50 (lower is better; actual compression may rise to meet budget) |
-| `xclk_mhz` | 10, 16, 20, 24; default 20; live clock update; see measured 24 MHz results below |
+| `xclk_mhz` | 10, 16, 20, 24; default 20; requires a compatible PLL combination when overridden |
 | `brightness`, `contrast`, `saturation`, `sharpness`, `ae_level` | -2–2 |
 | `denoise` | 0–8, only if supported by the attached sensor |
 | `hmirror`, `vflip`, `aec`, `aec2`, `agc`, `awb`, `awb_gain` | 0 or 1 |
@@ -175,6 +180,11 @@ across power cycles is needed; ESP firmware stays the same.
 | `wb_mode` | 0–4 |
 | `special_effect` | 0–6 |
 | `bpc`, `wpc`, `raw_gma`, `lenc`, `dcw`, `colorbar` | 0 or 1 |
+
+With the calibrated OV3660 PLL preset, direct XCLK changes to 10/16/24 MHz fail
+validation. Disable the override with `set pll_multiplier 0` first, or select a
+compatible PLL combination. `defaults` restores the measured 20 MHz preset.
+The earlier 24 MHz results below describe their recorded sensor/firmware state.
 
 Not every sensor implements every setting. A failed callback pauses images,
 reports `config_error`, and leaves the command link active. Send `defaults` or
@@ -560,7 +570,8 @@ allowances, not measured modes. UXGA has its separate 64 KiB allowance. A
 50,000-byte JPEG at 45 FPS would require 2.25 MB/s before overhead, beyond the
 current SPI link. More cores or removing Wi-Fi cannot change that wire rate.
 
-Current software boundaries and next experiments:
+Historical software boundaries before the sensor-capability upgrade (superseded
+by the calibrated profile below):
 
 - VGA is advertised through 30 FPS; 720p/XGA through 15. Pico-only descriptor
   changes can request higher rates up to the existing 60-FPS protocol limit,
@@ -648,45 +659,51 @@ reconnection. With no supported sensor, diagnostics remain available.
 | --- | --- | --- |
 | OV2640, either firmware | ESP32 OV2640 USB Camera / CAFE:4051 | Existing nine sizes, through 1600×1200 |
 | OV3660, old ESP firmware | ESP32 OV3660 Legacy Camera / CAFE:4052 | Existing nine sizes; no PLL overrides |
-| OV3660, upgraded ESP firmware | ESP32 OV3660 USB Camera / CAFE:4053 | Eleven sizes, including 1920×1080 and 2048×1536 |
+| OV3660, upgraded ESP firmware | ESP32 OV3660 USB Camera / CAFE:4053 | Ten sizes, including 1920×1080; 3 MP withheld after failed hardware tests |
 | Not yet detected / unsupported | ESP32 Camera Discovery / CAFE:4050 | Diagnostics only |
 
 Choose the newly named device in OBS after the first upgrade. UVC frame indices
-1–9 retain their existing geometry. FHD requests 5/10 FPS (default 10), QXGA
-requests 5/10 FPS (default 5). Both use the full 64 KiB JPEG slot; starting quality
-is 28/32 respectively and compression increases if necessary. **These additional
-modes and rates are candidates pending hardware validation, not measured output.**
-An unusually detailed frame may exceed 64 KiB even at maximum compression.
+1–9 retain their existing geometry. All Pico builds use the same calibrated
+OV3660 menu; the fast-build flag only changes OV2640/legacy small-mode requests.
 
-The standard Pico builds retain the previous rates for existing sizes. The
-`zero_camera_fast` and `zero_camera_uart` measurement builds additionally expose
-60 FPS VGA and 30 FPS HD/XGA on upgraded OV3660; their existing QVGA/QQVGA 60 FPS
-requests remain. Do not equate an OBS selection with an achievable frame rate.
-The same menu table drives descriptors, UVC validation and the ESP request.
+| OV3660 resolution | Available requested FPS |
+| --- | --- |
+| 160×120, 320×240, 480×320, 640×480, 800×600, 1024×768 | 30, 25, 20, 15, 10, 5 |
+| 1280×720 | 20, 15, 10, 5 |
+| 1280×1024, 1600×1200, 1920×1080 | 15, 10, 5 |
+
+UXGA/FHD start at JPEG quality number 28 (higher means more compression) and use
+the full 64 KiB slot. Other starting qualities are unchanged. An unusually
+detailed frame may still exceed the limit. QXGA/2048×1536 repeatedly exceeded it
+even at quality 50, so that freezing mode is not advertised. Increasing capacity
+requires a separate buffer/transport change and another ESP upload.
+The same table drives descriptors, UVC validation and the ESP request. Requests
+are ceilings; they do not guarantee the exact delivered FPS.
 
 ### OV3660 timing experiments without another ESP upload
 
-The upgrade exposes checked PLL controls through Pico CDC, after sensor detection.
-XCLK remains 20 MHz and PLL multiplier 0 means the SDK's normal geometry-specific
-timing. OV2640 retains its original sensor timing and rejects OV3660 PLL commands.
-A useful baseline for a non-QXGA mode at XCLK 20 MHz is:
+The upgraded OV3660 profile automatically uses the measured timing combination:
+XCLK 20 MHz, multiplier 16, predivider 1, system divider 1, root flag 0, seld5 0,
+PCLK divider 11. This computes to SYSCLK 53.33 MHz and PCLK 9.70 MHz. OV2640 and
+legacy ESP profiles retain SDK timing. OV2640 rejects these PLL commands.
+To compare SDK timing with the calibrated profile through Pico CDC:
 
 ```text
-set pll_multiplier 30
-set pclk_div 12
-status
 set pll_multiplier 0
+status
+defaults
 ```
 
-The first command explicitly selects the usual 50 MHz SYSCLK / 10 MHz PCLK
-calculation; the second lowers PCLK to about 8.33 MHz while retaining SYSCLK. It
-is a capture-throughput experiment, not a measured improvement. Multiplier 0
-restores the SDK timing, including its separate QXGA recipe. Available integer
+Multiplier 0 restores SDK geometry timing; `defaults` restores the calibrated
+sensor preset and per-mode quality, keeping the selected resolution/rate. Available integer
 controls: `pll_multiplier`, `pll_sys_div`, `pll_pre_div`, `pll_root_2x`,
 `pll_seld5`, `pclk_div`. Field ranges and computed clock combinations are checked:
-VCO 150–500 MHz, SYSCLK <=54 MHz and PCLK <=10 MHz. Invalid combinations are
+PLL reference 4–13.5 MHz, VCO 150–500 MHz, SYSCLK <=54 MHz and PCLK 8–10 MHz.
+The root flag must be zero: the pinned callback writes bit 6 of register 0x303D,
+but the datasheet assigns the root divider to bit 2. A physical trial confirmed
+the expected doubled clock was not produced. Invalid combinations are
 rejected atomically; change one parameter at a time and check applied generation,
-configuration error and real frame gaps. `defaults` clears all overrides, while
+configuration error and real frame gaps. `defaults` clears user overrides, while
 OBS resolution changes preserve explicit timing and other settings. Settings
 remain in RAM. PLL callback failure stops publication until a valid new request.
 
@@ -702,16 +719,16 @@ not unverified performance claims from the discussion.
 
 Upload the new Pico first; it understands old ESP status packets and deliberately
 withholds new modes until capability bit 0 arrives. Then upload the reviewed ESP
-USB firmware once. Default configuration packets remain byte-identical to v2.
+USB firmware once. Discovery, OV2640 and legacy default packets remain
+byte-identical to v2; the upgraded OV3660 preset uses the PLL extension.
 Custom PLL fields occupy bytes 76–81; header capabilities occupy bytes 116–119.
 Old Pico firmware rejects the extended header, so upgrading ESP alone is not a
 working deployment. The fixed 128-byte packets, CRC, wiring and SPI speeds remain.
 ESP initializes buffers for QXGA, clamped by the SDK to the detected sensor's
 maximum before allocation, and retains them across mode changes.
 
-This release adds the controls needed for measured OV3660 optimization; it does
-not yet establish a faster sensor profile. Preserve the previous measured clock
-results above when comparing the new firmware.
+Live comparisons established the calibrated preset below. Earlier experiments
+remain recorded for comparison; their settings are not current recommendations.
 
 The upgraded wire contract accepts requested intervals up to 120 FPS so future
 Pico-only tuning does not need another ESP upload. Current USB menus remain at
@@ -760,7 +777,110 @@ PlatformIO completed successfully. The application binary SHA256 still matches
 `f6559a422c6fcab3f15647f838aa57f1a65d1c57633d1fb165e77c8f0227b0f6`.
 Upload evidence: `~/Desktop/Codex-projects/esp-cam-validation/sensor-profile-esp-upload.log`.
 
-Both updated firmwares are now installed. Reconnection and normal boot are the
-next physical steps; sensor detection, FHD/QXGA decoding, timing experiments and
-sustained FPS measurements on the upgraded ESP are still pending. This upload
-verification confirms flash contents, not new-mode camera performance.
+At that upload checkpoint, normal assembly reconnection and live validation were
+still pending. The measurements below were taken after Kate reconnected both
+boards and reset the ESP with OV3660 fitted.
+
+
+### Calibrated OV3660 validation — 2026-11-06
+
+The reconnected ESP identified OV3660 (PID 13920) and capability bit 0. Pico
+selected its sensor-specific USB identity automatically. Calibration was done
+entirely through Pico commands and Pico uploads; the ESP was not flashed again.
+The final Pico menu was also read back through macOS AVFoundation: ten sizes,
+no 3 MP entry, no 60 FPS requests, and FHD capped at requested 15 FPS.
+
+Twenty-second decoded-video checks at each geometry produced:
+
+| Resolution | Requested FPS | Decoded FPS | Largest steady frame gap |
+| --- | ---: | ---: | ---: |
+| 160×120 | 30 | 29.39 | 51 ms |
+| 320×240 | 30 | 29.43 | 53 ms |
+| 480×320 | 30 | 29.40 | 56 ms |
+| 640×480 | 30 | 28.92 | 61 ms |
+| 800×600 | 30 | 29.39 | 60 ms |
+| 1024×768 | 30 | 29.08 | 67 ms |
+| 1280×720 | 20 | 18.57 | 74 ms |
+| 1280×1024 | 15 | 14.36 | 150 ms |
+| 1600×1200 | 15 | 14.83 | 115 ms |
+| 1920×1080 | 20 (trial, subsequently removed) | 12.39 | 108 ms |
+
+All ten decoded at the requested dimensions. No steady gap exceeded 250 ms.
+Capture errors, invalid packets, oversized frames and active USB restarts did
+not increase during this sweep. The ESP driver stayed initialized once across
+all switches. Counters already contained failures from deliberately rejected
+clock/3 MP experiments; compare changes, not their absolute lifetime totals.
+
+Measured decisions and limits:
+
+- SDK timing at 20 MHz XCLK gave approximately 27.76 FPS VGA and 13.90 FPS UXGA
+  at fixed quality 28. The selected PLL preset gave 29.62 and 14.83 respectively
+  in matched 30-second comparisons. Actual host decoding determined the result.
+- FHD requested 20 and requested 15 both delivered about 12.4 FPS. Quality36 did
+  not improve it, so retain quality 28 and remove the ineffective 20 request.
+- QXGA/2048×1536 could not sustain decoded frames with the natural scene or
+  sensor colorbar, even at quality 50. Oversize counters rose continuously. The
+  fixed 64 KiB frame limit is the reproduced rejection cause; more RAM capacity
+  must be designed on both sides before restoring this option.
+- PCLK 3.33 MHz caused capture timeouts; recovered remotely with SDK timing.
+  The root-flag trial produced half the calculated FPS; the installed archive
+  writes 0x40 where the datasheet specifies root bit 0x04. The final Pico rejects
+  both settings. A 16 MHz XCLK trial reported high USB counters but decoded slowly
+  with gaps up to614 ms; it was also rejected.
+
+Clock bounds and the root-register finding were checked against the
+[OV3660 clock diagram and register table](https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/OV3660_datasheet.pdf#page=40)
+and the installed ESP camera archive. The 8 MHz minimum PCLK is an empirical
+capture bound for this implementation, not a general sensor datasheet limit.
+
+The USB and servo host suites passed, including real pinned TinyUSB negotiation.
+All four Pico variants and both ESP targets built. Independent review approved
+the calibration code and confirmed installed-ESP protocol compatibility. The
+stricter shared validator is in the rebuilt ESP source too, but this deployment
+uses the already installed ESP image; the updated Pico enforces the same limits.
+
+Installed Pico `zero_camera_uart` UF2 SHA256:
+`c4679d90d1e9bacb7413f834dbfcff1bb7a575b24fc5a4c03e816e7a30ce47c2`.
+Installed ESP application remains:
+`f6559a422c6fcab3f15647f838aa57f1a65d1c57633d1fb165e77c8f0227b0f6`.
+Both Pico calibration uploads passed picotool full read-back verification.
+Evidence is in `~/Desktop/Codex-projects/esp-cam-validation/`: `*-calibrated-*.json`,
+`*-sdk-q28-*.json`, `*-pll53-q28-*.json`, `*-fhd-quality-*.json`, build logs and
+`calibrated-host-formats.log`. These are local artifacts, not repository files.
+
+These measurements use the current bench view. They do not establish moving-POV
+latency, low-light FPS or image quality in every scene. OV2640 menus/defaults and
+protocol behavior are regression-tested; that sensor was not physically fitted
+again during this OV3660 calibration. Earlier OV2640 hardware results still apply
+only to their recorded conditions.
+
+The final firmware then passed a **300-second UXGA/15 soak**: 4,448 decoded
+frames, **14.822 FPS**, 79.4 ms p95 gap and **137.4 ms maximum gap**; no gap over
+250 ms. Capture/packet/oversize/SPI/link errors, active USB restarts and camera
+initializations had zero new increments. Evidence:
+`20261106-052512-calibrated-soak-1600x1200-15.json` in the validation folder.
+This excludes startup from steady gap statistics, retaining all samples in JSON.
+
+The final **120-second FHD/15 soak** also passed: 1,487 decoded frames,
+**12.384 FPS**, 100.9 ms p95 gap and **112.2 ms maximum gap**; no gap over 250 ms
+and no new capture/packet/oversize/SPI/link errors or active USB restart.
+Evidence: `20261106-052727-calibrated-fhd-1920x1080-15.json`.
+
+A final SDK-timing -> `defaults` round trip confirmed each generation and restored
+multiplier 16/predivider 1/PCLK divider 11 without restarting the ESP camera driver.
+The subsequent eight-second VGA/30 decode passed (232 frames, about 29 FPS).
+Invalid root flag 1 and XCLK 24 with the calibrated tuple both returned `ERR`
+without changing the desired generation. Final state: profile 3, VGA/30,
+quality 16, desired/applied generation 10, config_error 0, camera_starts 1.
+No capture process or serial monitor was left running; OBS can reopen the device.
+
+Local UXGA and FHD sample PNGs were inspected. Frames are complete with no obvious
+transport tearing, but the scene looks soft, possibly out of focus. **Check the
+lens/focus and repeat a detailed-scene test before judging final POV image quality
+or worst-case JPEG bandwidth.** The existing soft bench view is not a substitute
+for that test. No physical focus adjustment was attempted remotely.
+
+For the measured setup, start with **1024×768/requested 30** for motion/detail,
+or **1600×1200/requested 15** for more resolution. FHD offers a widescreen option
+at approximately 12.4 FPS. These are measured bench starting points, not an
+assurance of constant FPS or zero drops in a moving or low-light scene.

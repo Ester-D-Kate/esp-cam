@@ -37,16 +37,22 @@ struct SensorPll {
   uint8_t sys_div = 1, pre_div = 3, root_2x = 0, seld5 = 0, pclk_div = 10;
 };
 inline bool valid_pll(const SensorPll& p, unsigned xclk_mhz) {
+  // The pinned OV3660 callback writes root_2x into reserved bit 6 of 0x303D,
+  // while the datasheet places the root divider at bit 2. Keep it disabled.
+  if (p.root_2x) return false;
   if (!p.multiplier) return true;
   if (p.multiplier > 31 || !p.sys_div || p.sys_div > 15 || p.pre_div > 3 ||
       p.root_2x > 1 || p.seld5 > 3 || !p.pclk_div || p.pclk_div > 31) return false;
   constexpr unsigned pre2[] = {2, 3, 4, 6}, seld2[] = {2, 2, 4, 5};
   // Rational comparisons avoid rounding an out-of-range clock into acceptance.
-  const uint64_t vco_n = uint64_t(xclk_mhz) * 1000000 * p.multiplier * (p.root_2x + 1) * 2;
+  const uint64_t reference_n = uint64_t(xclk_mhz) * 1000000 * 2;
+  const uint64_t vco_n = reference_n * p.multiplier;
   const uint64_t vco_d = pre2[p.pre_div];
   const uint64_t pll_d = vco_d * p.sys_div * seld2[p.seld5];
-  return vco_n >= 150000000u * vco_d && vco_n <= 500000000u * vco_d &&
+  return reference_n >= 4000000u * vco_d && reference_n <= 13500000u * vco_d &&
+      vco_n >= 150000000u * vco_d && vco_n <= 500000000u * vco_d &&
       vco_n * 2 <= 54000000u * pll_d * 4 &&
+      vco_n * 2 >= 8000000u * pll_d * 2 * p.pclk_div &&
       vco_n * 2 <= 10000000u * pll_d * 2 * p.pclk_div;
 }
 inline bool pll_equal(const SensorPll& a, const SensorPll& b) {
@@ -64,6 +70,16 @@ struct Config {
   int16_t settings[kSettingCount];
   Config() { for (auto& value : settings) value = kDefaultSetting; }
 };
+inline Config profile_defaults(UsbCamProfile profile) {
+  Config c;
+  if (profile == USB_CAM_PROFILE_OV3660) {
+    // Hardware-validated: 20 MHz XCLK, 53.33 MHz SYSCLK, 9.70 MHz PCLK.
+    c.pll.multiplier = 16;
+    c.pll.pre_div = 1;
+    c.pll.pclk_div = 11;
+  }
+  return c;
+}
 inline bool supported_geometry(uint16_t w, uint16_t h) {
   // SDK geometries through QXGA; the sensor-specific check runs before writes.
   static const uint16_t sizes[][2] = {{96,96},{160,120},{176,144},{240,176},{240,240},
@@ -145,7 +161,7 @@ inline bool config_equal(const Config& a, const Config& b) {
   return memcmp(x, y, sizeof(x)) == 0;
 }
 inline Config mode_config(unsigned index, uint32_t interval, UsbCamProfile profile = USB_CAM_PROFILE_OV2640) {
-  Config c;
+  Config c = profile_defaults(profile);
   const UsbCamMode* mode = usb_cam_profile_mode(profile, index);
   if (!mode || !usb_cam_valid_interval(mode, interval)) { c.width = 0; return c; }
   c.width = mode->width; c.height = mode->height; c.quality = mode->quality;

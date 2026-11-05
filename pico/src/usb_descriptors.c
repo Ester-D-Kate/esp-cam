@@ -13,6 +13,7 @@ enum { VIDEO_CONTROL, VIDEO_STREAM, CDC_CONTROL, CDC_DATA, INTERFACE_COUNT };
 // Encode the uint32 intervals explicitly while counting intervals, not bytes.
 #define LE_INTERVALS_2(a, b) U32_TO_U8S_LE(a), U32_TO_U8S_LE(b)
 #define LE_INTERVALS_3(a, b, c) U32_TO_U8S_LE(a), U32_TO_U8S_LE(b), U32_TO_U8S_LE(c)
+#define LE_INTERVALS_4(a, b, c, d) U32_TO_U8S_LE(a), LE_INTERVALS_3(b, c, d)
 #define LE_INTERVALS_6(a, b, c, d, e, f) LE_INTERVALS_3(a, b, c), LE_INTERVALS_3(d, e, f)
 #define LE_INTERVALS_7(a, ...) U32_TO_U8S_LE(a), LE_INTERVALS_6(__VA_ARGS__)
 #define JOIN_INNER(a, b) a##b
@@ -32,7 +33,7 @@ enum { VIDEO_CONTROL, VIDEO_STREAM, CDC_CONTROL, CDC_DATA, INTERFACE_COUNT };
     .bDeviceSubClass = MISC_SUBCLASS_COMMON, .bDeviceProtocol = MISC_PROTOCOL_IAD, \
     .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE, \
     .idVendor = 0xcafe, .idProduct = pid, \
-    .bcdDevice = 0x0300 + USB_CAM_ENABLE_60FPS, .iManufacturer = 1, .iProduct = 2, \
+    .bcdDevice = 0x0310 + USB_CAM_ENABLE_60FPS, .iManufacturer = 1, .iProduct = 2, \
     .iSerialNumber = 3, .bNumConfigurations = 1 }
 static const tusb_desc_device_t devices[] = {
     DEVICE_DESCRIPTOR(0x4050), DEVICE_DESCRIPTOR(0x4051),
