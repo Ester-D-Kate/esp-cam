@@ -244,9 +244,10 @@ or zero-drop guarantee.
 The current source keeps the driver initialized across configuration changes and
 reports capture timeouts promptly. Recovery now covers errors 2, 6, 7 and 8 with
 the same two-attempt limit; unsupported controls are not retried. Host tests and
-both ESP/four Pico builds pass. **This lifecycle revision still requires upload
-and repeated-switching hardware validation.** The 24 MHz option is available for
-measurement, with the proven 20 MHz default retained.
+both ESP/four Pico builds pass. **This lifecycle revision still requires an ESP
+upload and repeated-switching hardware validation.** Pico commit `4735f12` is
+uploaded and verified, including decoding old ESP status and VGA video. The
+24 MHz option is available for measurement, with the proven 20 MHz default retained.
 
 The optional `zero_camera_uart` diagnostic build reads ESP **U0T/GPIO1 -> Pico
 GP5** at 115200 baud and forwards `ESP:` lines over USB CDC. Connect with power

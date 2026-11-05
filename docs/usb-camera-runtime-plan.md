@@ -204,6 +204,15 @@ PlatformIO; no dependency upgrade.
   buffer; the new Pico accepts old ESP diagnostic zeros. Full USB/servo tests,
   both ESP builds and all four Pico builds pass. Upload Pico first, verify old
   ESP status compatibility, then request the physical ESP programming step.
+- Lifecycle source saved as `4735f12`. Its `zero_camera_uart` image was uploaded
+  through the working CDC `bootsel` command and picotool, with flash verification
+  successful. Log: `.pio/usb-cam-research/persistent-camera-pico-upload.log`.
+  New-format JSON was received from the Pico while old ESP firmware continued
+  VGA near25FPS (`invalid=0`, desired/applied generation1). Camera-start/reset/
+  actual-clock diagnostics are correctly zero until the new ESP is flashed.
+  The reviewed ESP image is built and pending Kate's physical programming setup.
+  ESP binary SHA256: `ccda58cf175620208d33123cd4c9aa8f3b495223f146803f161e0bcf4dc8af31`.
+  Pico UF2 SHA256: `43ab778b148428a4e8de0d280a9b79a15875116649f83065c80f1e85d4687f61`.
 
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here
