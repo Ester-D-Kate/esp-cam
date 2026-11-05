@@ -213,8 +213,8 @@ pio run -d pico -e zero_camera -e pico_camera -e zero_camera_fast -e zero_camera
 ```
 
 Builds/tests passed during development on 2026-11-05. Pico uses about 208 KiB of
-static RAM; that does not measure runtime stack headroom. The ESP runs diagnostic
-commit `d776503`, uploaded with verified flash. Moving the return wire from GP6
+static RAM; that does not measure runtime stack headroom. The earlier measurements
+used ESP diagnostic commit `d776503`. Moving the return wire from GP6
 to the intended GP7 resolved configuration reception: CRCs/tokens match and the
 OV2640 sensor is detected. The SD socket is empty. The detailed investigation and
 upload records are in the implementation plan.
@@ -244,9 +244,11 @@ or zero-drop guarantee.
 The current source keeps the driver initialized across configuration changes and
 reports capture timeouts promptly. Recovery now covers errors 2, 6, 7 and 8 with
 the same two-attempt limit; unsupported controls are not retried. Host tests and
-both ESP/four Pico builds pass. **This lifecycle revision still requires an ESP
-upload and repeated-switching hardware validation.** Pico commit `4735f12` is
-uploaded and verified, including decoding old ESP status and VGA video. The
+both ESP/four Pico builds pass. **Both boards now have lifecycle revision
+`4735f12` uploaded with flash verification.** The ESP upload completed on
+2026-11-06 for the requested OV3660 test; reassembly, sensor identification and
+post-update switching validation are pending. The Pico was previously verified
+decoding old ESP status and VGA video. The
 24 MHz option is available for measurement, with the proven 20 MHz default retained.
 
 The optional `zero_camera_uart` diagnostic build reads ESP **U0T/GPIO1 -> Pico

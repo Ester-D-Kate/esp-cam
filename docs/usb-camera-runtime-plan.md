@@ -231,6 +231,18 @@ PlatformIO; no dependency upgrade.
   reliability under all conditions or zero drops. The reviewed ESP lifecycle
   revision remains built but unflashed; its physical programming step is pending.
 
+- 2026-11-06: Kate attached the ESP32-CAM to its programmer and explicitly
+  requested the prepared firmware upload for an OV3660 test. Re-ran the complete
+  USB host suite successfully, confirmed the prepared binary hash, and uploaded
+  `usb_camera` through `/dev/cu.usbserial-140` at115200 baud. Upload completed in
+  66.12 seconds; esptool verified every written region. Source revision4735f12;
+  binary SHA256 `ccda58cf175620208d33123cd4c9aa8f3b495223f146803f161e0bcf4dc8af31`.
+  Log: `.pio/usb-cam-research/ov3660-esp-upload-2026-11-06.log`.
+  Pico already runs the matching revision with UART diagnostics. No new firmware
+  changes were needed. Physical reassembly and live sensor identification are
+  pending; do not claim OV3660 has been detected or measured yet. Both OV2640
+  and OV3660 remain automatically supported by the same ESP image.
+
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here
 on the existing feature branch, as explicitly requested and approved.
