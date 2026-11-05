@@ -717,3 +717,38 @@ The upgraded wire contract accepts requested intervals up to 120 FPS so future
 Pico-only tuning does not need another ESP upload. Current USB menus remain at
 60 FPS or below; this protocol ceiling does not establish achievable sensor or
 USB performance. Legacy ESP menus remain bounded by their existing contract.
+
+### Build, review and staged Pico validation
+
+Commits `6ea09b2` and `d29b670` implement this upgrade. The complete host USB
+suite, servo suite, both ESP builds and four Pico builds passed. An independent
+review found no blocking defects and verified the important allocation and PLL
+behaviors directly in the installed ESP archive. Pico's existing linker warning
+about an RWX load segment remains; memory usage is 208716/262144 bytes.
+
+The UART Pico build was uploaded with picotool read-back verification after
+saving a full flash backup. SHA256:
+
+- Prepared ESP binary: `f6559a422c6fcab3f15647f838aa57f1a65d1c57633d1fb165e77c8f0227b0f6`
+- Installed Pico UF2: `39daf8c13fd976835b402dc0bbb5e0c949ce70d975e669cf0b3132158b6b39d9`
+
+The existing ESP reported sensor PID 13920 (OV3660), capabilities 0. The Pico
+automatically selected profile 2 and macOS eventually enabled **OV3660 Legacy
+MJPEG Video**, CAFE:4052. Initially macOS enumerated the new identity but did not
+register drivers; its logs showed accessory authorization activity, after which
+both UVC and CDC appeared. No firmware patch was needed for that host delay.
+A new identity may prompt the Mac to allow the accessory; approve the specific
+camera if asked, without changing global accessory security settings.
+
+Three six-second FFmpeg decoding checks completed: VGA/30 (168 decoded frames),
+UXGA/10 (57), VGA/30 (168). Every decoded frame had the requested dimensions.
+Capture errors, invalid packets, oversized frames, SPI timeouts, USB restarts,
+configuration retries and command errors had **zero new increments** during the
+sequence. This is a compatibility smoke test, not a sustained FPS measurement.
+Evidence: `~/Desktop/Codex-projects/esp-cam-validation/sensor-profile-legacy-smoke.json`.
+
+**Deployment still pending:** the ESP capability upgrade has not been flashed.
+FHD/QXGA and new timing controls remain intentionally unavailable on the installed
+old ESP. Their image integrity and performance, plus OV2640 physical regression
+testing, remain to be measured after the ESP upload and relevant sensor fitting.
+The system is left on VGA with no capture test running.
