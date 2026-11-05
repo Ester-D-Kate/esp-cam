@@ -182,8 +182,13 @@ pio run -d pico -e zero_camera -e pico_camera -e zero_camera_fast
 
 Builds/tests passed during development on 2026-11-05. The runtime Pico build uses
 about 208 KiB of static RAM; that does not measure runtime stack headroom.
-**Hardware verification of the runtime-mode version is pending.** The previous
-25 FPS VGA result belongs to the checkpoint, not every new resolution.
+On 2026-11-05, runtime commit `9087b4b` was uploaded to both controllers. The
+ESP32 upload completed once with flash hash verification; the Pico upload
+verified its flash and restarted as VID/PID CAFE:4050. macOS AVFoundation
+enumerated all nine resolutions and their discrete frame-rate choices.
+**Runtime video/control-channel verification is pending reconnection of the
+READY and new return wires.** The previous 25 FPS VGA result belongs to the
+checkpoint, not every new resolution.
 
 Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
 change a sensor setting and restore defaults, reboot either board, close/reopen

@@ -70,6 +70,10 @@ PlatformIO; no dependency upgrade.
   pass: eight bad-geometry frames stop capture without confirmation, and failed
   oversize quality adaptation releases the framebuffer and reports an error;
   both recover through changed desired configuration. Hardware validation remains.
+- Runtime commit `9087b4b` uploaded and verified on ESP32 (one upload) and
+  RP2040-Zero on 2026-11-05. macOS enumerated all nine resolutions/rate choices.
+  Kate was asked to remove ESP GPIO0-to-GND and programmer TX, restore GP3-to-ESP3,
+  add GP7-to-ESP2, then power/reset. Await that physical step before video tests.
 - Ruling: keep 60 FPS opt-in in `zero_camera_fast` until physical measurement;
   normal menu uses 30 FPS through SVGA and 15 FPS above it. This avoids presenting
   an unmeasured high-rate experiment as validated output.
