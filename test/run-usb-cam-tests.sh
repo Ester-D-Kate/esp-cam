@@ -32,6 +32,11 @@ sensor_dir=${USB_CAM_SENSOR_DIR:-${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packa
   "$project_dir/src/usb_cam/camera_control.cpp" "$project_dir/test/usb_cam/test_camera_control.cpp" \
   -o "$project_dir/.pio/host-tests/camera-control-tests"
 "$project_dir/.pio/host-tests/camera-control-tests"
+"${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -I"$project_dir/test/usb_cam/stubs" -I"$project_dir/shared" -I"$project_dir/src/usb_cam" \
+  "$project_dir/src/usb_cam/spi_link.cpp" "$project_dir/test/usb_cam/test_spi_link.cpp" \
+  -o "$project_dir/.pio/host-tests/spi-link-tests"
+"$project_dir/.pio/host-tests/spi-link-tests"
 for fast in 0 1; do
   for name in usb_descriptors video_negotiation; do
     extra_source=""

@@ -62,11 +62,26 @@ inline void encode_config(const Config& c, uint8_t* out) {
   for (unsigned i = 0; i < kSettingCount; ++i) put16(out + 28 + 2 * i, uint16_t(c.settings[i]));
   put32(out + 124, crc32(out, 124));
 }
-inline bool decode_config(const uint8_t* data, size_t length, Config& out) {
-  if (!data || length != kControlSize || get32(data) != 0x32474643 ||
-      get16(data + 4) != 2 || get16(data + 6) != kControlSize ||
-      get32(data + 124) != crc32(data, 124) || data[26] || data[27]) return false;
-  for (size_t i = 28 + 2 * kSettingCount; i < 124; ++i) if (data[i]) return false;
+enum class ConfigDecodeError : uint32_t {
+  None = 0, Length = 1, Magic = 2, Version = 3, EncodedLength = 4,
+  Checksum = 5, Reserved = 6, Values = 7
+};
+inline bool decode_config(const uint8_t* data, size_t length, Config& out,
+                          ConfigDecodeError* error = nullptr) {
+  const auto fail = [error](ConfigDecodeError reason) {
+    if (error) *error = reason;
+    return false;
+  };
+  if (error) *error = ConfigDecodeError::None;
+  if (!data || length != kControlSize) return fail(ConfigDecodeError::Length);
+  if (get32(data) != 0x32474643) return fail(ConfigDecodeError::Magic);
+  if (get16(data + 4) != 2) return fail(ConfigDecodeError::Version);
+  if (get16(data + 6) != kControlSize) return fail(ConfigDecodeError::EncodedLength);
+  if (get32(data + 124) != crc32(data, 124)) return fail(ConfigDecodeError::Checksum);
+  if (data[26] || data[27]) return fail(ConfigDecodeError::Reserved);
+  for (size_t i = 28 + 2 * kSettingCount; i < 124; ++i) {
+    if (data[i]) return fail(ConfigDecodeError::Reserved);
+  }
   Config c;
   c.generation = get32(data + 8); c.width = get16(data + 12); c.height = get16(data + 14);
   c.interval_100ns = get32(data + 16); c.max_jpeg = get32(data + 20);
@@ -75,7 +90,7 @@ inline bool decode_config(const uint8_t* data, size_t length, Config& out) {
     const uint16_t raw = get16(data + 28 + 2 * i);
     c.settings[i] = raw < 0x8000 ? int16_t(raw) : int16_t(int32_t(raw) - 65536);
   }
-  if (!valid_config(c)) return false;
+  if (!valid_config(c)) return fail(ConfigDecodeError::Values);
   out = c;
   return true;
 }

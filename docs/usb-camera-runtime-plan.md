@@ -19,7 +19,8 @@ PlatformIO; no dependency upgrade.
 
 - Preserve checkpoint `usb-cam-first-working` and existing legacy ESP code.
 - Keep GP8–GP14 unused; add GP7 to ESP GPIO2 only.
-- Three 64 KiB JPEG slots, 8 MHz SPI, CRC-protected messages, bounded waits.
+- Three 64 KiB JPEG slots, 8 MHz JPEG SPI / 1 MHz control exchange in the current
+  diagnostic update, CRC-protected messages, bounded waits.
 - Recurring settings belong to Pico; ESP supports SDK geometry through UXGA.
 - Physical FPS is measured, not inferred from USB descriptors.
 
@@ -84,6 +85,29 @@ PlatformIO; no dependency upgrade.
 - Ruling: all settings changes restart camera capture to restore unspecified
   sensor defaults deterministically. This costs a short pause but avoids stale
   settings after failures or changing presets.
+- Return-path bench follow-up: Kate restored normal wiring and reseated GP7 to
+  ESP2. The forward 128-byte status path works, but ESP `command_errors` rises
+  on every configuration and sensor initialization never starts. Passive Pico
+  input sampling observed the correct full 128-byte CFG2 response at GP7, with
+  1024 clock edges and zero byte mismatches. Faster GPIO slew and a one-bit
+  advance did not fix acceptance. Transient forward corruption seen during
+  earlier diagnostic boots later disappeared; its cause is not established.
+- Removed all temporary PIO sampling and bit-shift code. The next ESP image
+  reports receive prefix, both CRCs, precise decode error and control clock over
+  the working status path; RX memory is prefilled with 0xa5 before DMA. Its
+  128-byte control exchange runs at 1 MHz, leaving JPEG chunks at 8 MHz. This is
+  a diagnostic/conservative timing change, not a proven hardware fix. Pico gains
+  a `bootsel` serial command, already exercised successfully on the bench.
+- The status diagnostic round-trip test failed against the previous header
+  decoder, and the real SPI transport host test failed against the old all-8-MHz
+  exchange. Updated host tests and both ESP / all three Pico builds pass.
+  Another ESP upload and full runtime-mode bench acceptance remain necessary;
+  avoid reporting the checkpoint's 25 FPS as a runtime-mode result.
+- Independent review found no blockers in the diagnostic update, including
+  clock switching, manual CS, failure cleanup, header bounds, and the CDC
+  diagnostic buffer. The reviewed Pico image was uploaded with flash verification
+  and successfully read the old ESP's status packets (`invalid=0`); ESP receive
+  fields remain zero until its update. The ESP has not been reflashed again yet.
 
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here

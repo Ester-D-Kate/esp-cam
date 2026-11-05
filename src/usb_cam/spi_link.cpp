@@ -13,7 +13,8 @@ constexpr int kSelectPin = 15;
 constexpr int kReadyPin = 3;
 constexpr int kReturnPin = 2;
 constexpr size_t kChunkSize = 4092;
-spi_device_handle_t device = nullptr;
+spi_device_handle_t video_device = nullptr;
+spi_device_handle_t control_device = nullptr;
 uint8_t* staging = nullptr;
 uint8_t* response = nullptr;
 
@@ -24,7 +25,7 @@ bool write_bytes(const uint8_t* bytes, size_t length) {
     spi_transaction_t transaction{};
     transaction.length = count * 8;
     transaction.tx_buffer = staging;
-    if (spi_device_polling_transmit(device, &transaction) != ESP_OK) return false;
+    if (spi_device_polling_transmit(video_device, &transaction) != ESP_OK) return false;
     bytes += count;
     length -= count;
   }
@@ -59,7 +60,15 @@ bool begin() {
   config.spics_io_num = -1;  // One manual CS encloses header + all JPEG chunks.
   config.queue_size = 1;
   config.flags = SPI_DEVICE_NO_DUMMY;
-  if (spi_bus_add_device(HSPI_HOST, &config, &device) != ESP_OK) {
+  esp_err_t added = spi_bus_add_device(HSPI_HOST, &config, &video_device);
+  if (added == ESP_OK) {
+    // Only the 128-byte header/configuration exchange uses this slower clock.
+    // Both logical devices share manual CS; JPEG chunks retain the 8 MHz path.
+    config.clock_speed_hz = usb_cam::kControlSpiHz;
+    added = spi_bus_add_device(HSPI_HOST, &config, &control_device);
+  }
+  if (added != ESP_OK) {
+    if (video_device) { spi_bus_remove_device(video_device); video_device = nullptr; }
     spi_bus_free(HSPI_HOST);
     heap_caps_free(staging);
     heap_caps_free(response); response = nullptr;
@@ -72,7 +81,7 @@ bool begin() {
 bool ready() { return digitalRead(kReadyPin) == HIGH; }
 
 bool exchange(const uint8_t* header, const uint8_t* jpeg, size_t length, uint8_t* control) {
-  if (!device || !header || !control || length > usb_cam::kMaxJpeg ||
+  if (!video_device || !control_device || !header || !control || length > usb_cam::kMaxJpeg ||
       (length && !jpeg) || !ready()) return false;
   digitalWrite(kSelectPin, LOW);
   // A falling READY acknowledges this CS edge, not just a previous buffer.
@@ -81,11 +90,12 @@ bool exchange(const uint8_t* header, const uint8_t* jpeg, size_t length, uint8_t
   bool success = !ready();
   if (success) {
     memcpy(staging, header, usb_cam::kHeaderSize);
+    memset(response, 0xa5, usb_cam::kControlSize); // Make an unwritten DMA reply recognizable.
     spi_transaction_t transaction{};
     transaction.length = usb_cam::kHeaderSize * 8;
     transaction.rxlength = usb_cam::kControlSize * 8;
     transaction.tx_buffer = staging; transaction.rx_buffer = response;
-    success = spi_device_polling_transmit(device, &transaction) == ESP_OK;
+    success = spi_device_polling_transmit(control_device, &transaction) == ESP_OK;
     if (success) {
       memcpy(control, response, usb_cam::kControlSize);
       success = write_bytes(jpeg, length);

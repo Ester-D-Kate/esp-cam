@@ -54,6 +54,10 @@ void loop() {
   if (!exchanged) { ++counters.link_timeouts; return; }
   if (frame) ++sent;
   usb_cam::Config desired;
-  if (usb_cam::decode_config(response, sizeof(response), desired)) camera.configure(desired);
+  memcpy(counters.control_prefix, response, sizeof(counters.control_prefix));
+  counters.control_crc_received = usb_cam::get32(response + 124);
+  counters.control_crc_calculated = usb_cam::crc32(response, 124);
+  counters.control_spi_hz = usb_cam::kControlSpiHz;
+  if (usb_cam::decode_config(response, sizeof(response), desired, &counters.control_error)) camera.configure(desired);
   else ++counters.command_errors;
 }

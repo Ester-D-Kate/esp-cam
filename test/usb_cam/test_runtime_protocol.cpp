@@ -15,6 +15,20 @@ int main() {
   assert(decode_header(bytes.data(), bytes.size(), decoded));
   assert(decoded.kind == PacketKind::Status && decoded.config_error == 3);
   assert(decoded.attempted_generation == 7);
+  // Status must preserve the receiver's evidence even when CFG2 is rejected.
+  put32(bytes.data() + 72, 5); // Control checksum error.
+  put32(bytes.data() + 76, 0x11223344);
+  put32(bytes.data() + 80, 0x55667788);
+  memcpy(bytes.data() + 84, "bad-control-data", 16);
+  put32(bytes.data() + 100, 1000000);
+  put32(bytes.data() + 124, crc32(bytes.data(), 124));
+  assert(decode_header(bytes.data(), bytes.size(), decoded));
+  std::array<uint8_t, kHeaderSize> roundtrip{};
+  encode_header(decoded, roundtrip.data());
+  assert(roundtrip == bytes);
+  bytes[104] = 1; // The remaining reserved area is still protected.
+  put32(bytes.data() + 124, crc32(bytes.data(), 124));
+  assert(!decode_header(bytes.data(), bytes.size(), decoded));
   Config config;
   assert(!matches_config(status, config));
   Header frame;

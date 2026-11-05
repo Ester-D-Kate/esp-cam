@@ -1,6 +1,7 @@
 #include <cstdio>
 #include "pico/multicore.h"
 #include "pico/stdlib.h"
+#include "pico/bootrom.h"
 #include "tusb.h"
 #include "receiver.h"
 #include "usb_cam/frame_clock.h"
@@ -31,6 +32,10 @@ void commands() {
   const uint32_t count = tud_cdc_read(bytes, sizeof(bytes));
   for (uint32_t i = 0; i < count; ++i) {
     if (!reader.push(char(bytes[i]))) continue;
+    if (!reader.overflowed() && strcmp(reader.line(), "bootsel") == 0) {
+      tud_disconnect();
+      reset_usb_boot(0, 0);
+    }
     const auto result = reader.overflowed() ? usb_cam::CommandResult::Invalid :
                         usb_cam::apply_command(reader.line(), desired);
     if (result == usb_cam::CommandResult::Changed) {
@@ -68,6 +73,12 @@ void diagnostics() {
     prefix[2 * i + 1] = hex[rx.last_prefix[i] & 15];
   }
   prefix[sizeof(prefix) - 1] = '\0';
+  char control_prefix[33];
+  for (size_t i = 0; i < sizeof(rx.sender.control_prefix); ++i) {
+    control_prefix[2 * i] = hex[rx.sender.control_prefix[i] >> 4];
+    control_prefix[2 * i + 1] = hex[rx.sender.control_prefix[i] & 15];
+  }
+  control_prefix[32] = '\0';
   char line[1536];
   const int count = snprintf(line, sizeof(line),
       "{\"mode\":%u,\"width\":%u,\"height\":%u,\"target_fps\":%u,"
@@ -81,7 +92,9 @@ void diagnostics() {
       "\"desired_generation\":%lu,\"applied_generation\":%lu,\"config_error\":%lu,"
       "\"attempted_generation\":%lu,\"sensor_pid\":%u,\"command_errors\":%lu,"
       "\"stale_frames\":%lu,\"status_packets\":%lu,\"xclk_mhz\":%u,"
-      "\"desired_token\":%lu,\"applied_token\":%lu}\r\n",
+      "\"desired_token\":%lu,\"applied_token\":%lu,"
+      "\"control_error\":%lu,\"control_crc_received\":%lu,\"control_crc_calculated\":%lu,"
+      "\"control_prefix\":\"%s\",\"control_spi_hz\":%lu}\r\n",
       selected_mode, desired.width, desired.height, unsigned(10000000u / desired.interval_100ns),
       (unsigned long)rx_fps_x10, (unsigned long)usb_fps_x10,
       (unsigned long)rx.frames, (unsigned long)completed, (unsigned long)rx.invalid,
@@ -97,7 +110,10 @@ void diagnostics() {
       (unsigned long)rx.sender.config_error, (unsigned long)rx.sender.attempted_generation,
       rx.sender.sensor_pid, (unsigned long)rx.sender.command_errors,
       (unsigned long)stale_frames, (unsigned long)rx.status_packets, desired.xclk_mhz,
-      (unsigned long)usb_cam::config_token(desired), (unsigned long)rx.sender.config_token);
+      (unsigned long)usb_cam::config_token(desired), (unsigned long)rx.sender.config_token,
+      (unsigned long)rx.sender.control_error, (unsigned long)rx.sender.control_crc_received,
+      (unsigned long)rx.sender.control_crc_calculated, control_prefix,
+      (unsigned long)rx.sender.control_spi_hz);
   // A closed/slow serial monitor must never stall the UVC stream.
   if (count > 0 && size_t(count) < sizeof(line) && tud_cdc_write_available() >= uint32_t(count)) {
     tud_cdc_write(line, uint32_t(count));

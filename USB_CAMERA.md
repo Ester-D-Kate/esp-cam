@@ -25,8 +25,11 @@ GPIO numbers below are board labels, not physical connector positions.
 | **GPIO2** | **GP7** | **New SPI0 TX return wire: Pico configuration to ESP** |
 | GND | GND | Shared ground |
 
-The five signal wires use 3.3 V logic, hardware SPI0 and RX/TX DMA, mode 1 at
-8 MHz. Pico GP8–GP14 remain unused. GP3 is a normal GPIO handshake. Keep wiring
+The five signal wires use 3.3 V logic, hardware SPI0 and RX/TX DMA, mode 1.
+The current source uses 1 MHz for the 128-byte configuration/header exchange
+and 8 MHz for JPEG data, under the same chip select. This adds about 0.9 ms per
+packet compared with an all-8-MHz exchange. Pico GP8–GP14 remain unused.
+GP3 is a normal GPIO handshake. Keep wiring
 short. Remove the SD card and disconnect servo/gyro wiring for this USB build.
 USB firmware excludes Wi-Fi and recording; the legacy `esp32cam` environment
 retains the original application and recording-button behavior.
@@ -47,19 +50,26 @@ For a full-size Raspberry Pi Pico use `pico_camera` instead of `zero_camera`.
 The native Pico SDK platform, GCC toolchain and TinyUSB remain pinned in the
 PlatformIO files. The older fixed-resolution environments live in the checkpoint.
 
-One planned ESP32 upload installs support for all SDK JPEG geometries through
+The ESP32 firmware supports all SDK JPEG geometries through
 1600x1200 and the controls below. Later Pico firmware can adjust its menus,
 requested rates and default settings within this contract.
 
-1. Disconnect Pico READY from ESP GPIO3. Leave the new GP7-to-GPIO2 wire
+1. Update Pico first: enter BOOTSEL (hold BOOT, tap RESET, release BOOT), then run
+   `pio run -d pico -e zero_camera -t upload`. The new Pico reads both the earlier
+   runtime headers and the new diagnostic extension; the old Pico rejects the
+   new extension.
+2. Disconnect Pico READY from ESP GPIO3. Leave the new GP7-to-GPIO2 wire
    disconnected during flashing: ESP GPIO2 must be low or floating to enter its
    serial bootloader. Connect the serial programmer, put GPIO0 to GND and reset.
-2. Upload with `pio run -e usb_camera -t upload --upload-port <ESP serial port>`.
-3. Disconnect programmer TX from GPIO3, free GPIO0 from GND, restore READY and
+3. Upload with `pio run -e usb_camera -t upload --upload-port <ESP serial port>`.
+4. Disconnect programmer TX from GPIO3, free GPIO0 from GND, restore READY and
    connect the new return wire. Reset the ESP32 into normal operation. Programmer
    RX may remain connected to ESP GPIO1 to read the transmit-only startup log.
-4. Put Pico in BOOTSEL (hold BOOT, tap RESET, release BOOT), then run
-   `pio run -d pico -e zero_camera -t upload`.
+
+The updated Pico firmware also accepts `bootsel` over its USB serial interface.
+That disconnects USB and enters the ROM bootloader, allowing subsequent Pico
+uploads without pressing buttons. Physical BOOTSEL remains available if USB is
+unresponsive. This command does not put the ESP32 into programming mode.
 
 Pico UF2 is `pico/.pio/build/zero_camera/firmware.uf2`; ESP binary is
 `.pio/build/usb_camera/firmware.bin`. Use PlatformIO for ESP upload so bootloader,
@@ -161,6 +171,15 @@ One JSON report per second includes:
   `overflows`, `rx_bytes`, `rx_prefix`: transport integrity and packet diagnostics.
 - `capture_errors`, `oversized`, `command_errors`, `link_timeouts`, `quality`:
   latest ESP counters and current compression, including status-only replies.
+- `control_prefix`, `control_crc_received`, `control_crc_calculated`: bytes and
+  CRCs actually received by ESP32 on its return input, reported on the next
+  forward packet. `control_spi_hz` identifies the header exchange clock.
+  `control_error`: 0 accepted, 1 missing/wrong buffer length, 2 magic, 3 version,
+  4 encoded length, 5 checksum, 6 reserved bytes, 7 invalid setting values.
+  These fields remain zero with the earlier ESP image. A valid default prefix
+  begins `4346473202008000` (`CFG2`, version 2, length 128); a repeated `a5`
+  pattern identifies the prefilled receive buffer. These are configuration
+  diagnostics, separate from `config_error` during sensor setup.
 - `stale_frames`, `replaced`, `seq_gaps`: discarded old configurations, frames
   replaced for bounded latency, and sender application sequence gaps. Warmup
   frames and oversize captures can produce gaps; this does not count every
@@ -186,9 +205,15 @@ On 2026-11-05, runtime commit `9087b4b` was uploaded to both controllers. The
 ESP32 upload completed once with flash hash verification; the Pico upload
 verified its flash and restarted as VID/PID CAFE:4050. macOS AVFoundation
 enumerated all nine resolutions and their discrete frame-rate choices.
-**Runtime video/control-channel verification is pending reconnection of the
-READY and new return wires.** The previous 25 FPS VGA result belongs to the
-checkpoint, not every new resolution.
+After reconnection and reseating GP7-to-ESP2, forward status packets were valid
+but every returned configuration was rejected. A temporary passive Pico PIO
+trace captured 128 correct return bytes at GP7 with no mismatches; this does not
+prove the bytes arriving at ESP32 GPIO2. Faster output edges and a one-bit-offset
+experiment did not establish a fix, and those experiments were removed.
+**Runtime video remains unverified and no frames are currently delivered.**
+The updated source includes ESP receive diagnostics and the slower control
+exchange; it requires an additional ESP32 upload before bench validation.
+The previous 25 FPS VGA result belongs to the checkpoint, not every new resolution.
 
 Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
 change a sensor setting and restore defaults, reboot either board, close/reopen

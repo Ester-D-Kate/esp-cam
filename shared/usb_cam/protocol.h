@@ -5,6 +5,7 @@ namespace usb_cam {
 constexpr size_t kHeaderSize = kControlSize;
 constexpr size_t kPacketCapacity = kHeaderSize + kMaxJpeg;
 constexpr uint32_t kSpiHz = 8000000;
+constexpr uint32_t kControlSpiHz = 1000000;
 enum class PacketKind : uint8_t { Status = 0, Frame = 1 };
 struct Header {
   PacketKind kind = PacketKind::Status;
@@ -16,6 +17,10 @@ struct Header {
   uint32_t generation = 0, config_token = 0;
   uint32_t attempted_generation = 0, attempted_token = 0;
   uint32_t config_error = 0, command_errors = 0;
+  ConfigDecodeError control_error = ConfigDecodeError::None;
+  uint32_t control_crc_received = 0, control_crc_calculated = 0;
+  uint8_t control_prefix[16]{};
+  uint32_t control_spi_hz = 0;
 };
 inline void encode_header(const Header& h, uint8_t* out) {
   memset(out, 0, kHeaderSize);
@@ -32,13 +37,18 @@ inline void encode_header(const Header& h, uint8_t* out) {
   put32(out + 52, h.config_token); put32(out + 56, h.attempted_generation);
   put32(out + 60, h.attempted_token); put32(out + 64, h.config_error);
   put32(out + 68, h.command_errors);
+  put32(out + 72, uint32_t(h.control_error));
+  put32(out + 76, h.control_crc_received); put32(out + 80, h.control_crc_calculated);
+  memcpy(out + 84, h.control_prefix, sizeof(h.control_prefix));
+  put32(out + 100, h.control_spi_hz);
   put32(out + 124, crc32(out, 124));
 }
 inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
   if (!data || length < kHeaderSize || get32(data) != 0x32564f50 ||
       get16(data + 4) != 2 || get16(data + 6) != kHeaderSize ||
       data[8] > 1 || data[9] > 63 || get32(data + 124) != crc32(data, 124)) return false;
-  for (size_t i = 72; i < 124; ++i) if (data[i]) return false;
+  if (get32(data + 72) > uint32_t(ConfigDecodeError::Values)) return false;
+  for (size_t i = 104; i < 124; ++i) if (data[i]) return false;
   Header h;
   h.kind = PacketKind(data[8]); h.quality = data[9]; h.sensor_pid = get16(data + 10);
   h.sequence = get32(data + 12); h.timestamp_us = get32(data + 16);
@@ -50,6 +60,10 @@ inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
   h.config_token = get32(data + 52); h.attempted_generation = get32(data + 56);
   h.attempted_token = get32(data + 60); h.config_error = get32(data + 64);
   h.command_errors = get32(data + 68);
+  h.control_error = ConfigDecodeError(get32(data + 72));
+  h.control_crc_received = get32(data + 76); h.control_crc_calculated = get32(data + 80);
+  memcpy(h.control_prefix, data + 84, sizeof(h.control_prefix));
+  h.control_spi_hz = get32(data + 100);
   if (h.kind == PacketKind::Status) {
     if (h.payload_size || h.payload_crc) return false;
   } else if (h.config_error || h.payload_size < 4 || h.payload_size > kMaxJpeg ||
