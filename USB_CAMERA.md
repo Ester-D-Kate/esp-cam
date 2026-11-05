@@ -134,7 +134,7 @@ across power cycles is needed; ESP firmware stays the same.
 | Setting | Accepted values |
 |---|---|
 | `quality` | 0–50 (lower is better; actual compression may rise to meet budget) |
-| `xclk_mhz` | 10, 16, 20; default 20, camera restarts to change it |
+| `xclk_mhz` | 10, 16, 20, 24; default 20; live clock update, 24 MHz needs bench validation |
 | `brightness`, `contrast`, `saturation`, `sharpness`, `ae_level` | -2–2 |
 | `denoise` | 0–8, only if supported by the attached sensor |
 | `hmirror`, `vflip`, `aec`, `aec2`, `agc`, `awb`, `awb_gain` | 0 or 1 |
@@ -153,6 +153,14 @@ geometry is received. Controls are based on Espressif's sensor callbacks, as in
 [CameraWebServer](https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Camera/CameraWebServer/app_httpd.cpp).
 They are not exposed in every application's native exposure dialog in this version.
 
+The revised ESP controller allocates UXGA capture buffers once. Resolution and
+quality changes use sensor callbacks while the camera peripheral remains running.
+Repeated identical settings and FPS-only changes do not restart the sensor.
+Changing optional controls (including restoring `default`) or recovering from a
+failed operation resets the sensor's registers and reapplies the requested state,
+without freeing the camera driver. Sensor changes discard three frames before
+JPEG validation; no stale configuration is acknowledged as applied.
+
 ## Diagnostics and verification
 
 One JSON report per second includes:
@@ -164,13 +172,18 @@ One JSON report per second includes:
   must match, and `config_error` must be zero, to confirm current settings.
 - `attempted_generation`, `config_error`: most recently attempted settings and
   their failure. Error 1 invalid configuration, 2 initialization, 3 unsupported
-  sensor, 4 geometry setup, 5 JPEG quality, 6 repeated bad JPEG geometry;
+  sensor, 4 geometry setup, 5 JPEG quality, 6 capture timeout or repeated bad JPEG
+  geometry, 7 sensor reset/default restoration, 8 clock change;
   32 onward identifies the setting index in `configuration.h`.
 - `sensor_pid`: actual detected sensor (38/0x26 is OV2640, 13920/0x3660 is OV3660).
 - `invalid`, `spi_timeouts`, `header_errors`, `length_errors`, `payload_errors`,
   `overflows`, `rx_bytes`, `rx_prefix`: transport integrity and packet diagnostics.
 - `capture_errors`, `oversized`, `command_errors`, `link_timeouts`, `quality`:
   latest ESP counters and current compression, including status-only replies.
+- `camera_starts`, `sensor_resets`, `xclk_hz`: full driver initialization attempts,
+  sensor-only reset attempts, and LEDC-reported clock frequency. A failed clock
+  change reports zero until recovered. Older ESP firmware reports these as zero;
+  upload the revised Pico decoder before the revised ESP firmware.
 - `control_prefix`, `control_crc_received`, `control_crc_calculated`: bytes and
   CRCs actually received by ESP32 on its return input, reported on the next
   forward packet. `control_spi_hz` identifies the header exchange clock.
@@ -196,7 +209,7 @@ probe/commit implementation, DMA accounting and USB endpoint recovery.
 sh test/run-usb-cam-tests.sh
 sh test/run-servo-tests.sh
 pio run -e usb_camera -e esp32cam
-pio run -d pico -e zero_camera -e pico_camera -e zero_camera_fast
+pio run -d pico -e zero_camera -e pico_camera -e zero_camera_fast -e zero_camera_uart
 ```
 
 Builds/tests passed during development on 2026-11-05. Pico uses about 208 KiB of
@@ -221,15 +234,26 @@ yet reliable.** Sensor initialization sometimes fails with error 2. Pico commit
 `config_retries` counts retries and `config_retry_attempts` shows the current
 request's used budget. Manual generation-only retries recovered ten VGA trials,
 but repeated multi-mode changes later exhausted the budget and stopped capture.
-The underlying SDK startup failure remains unresolved; these short measurements
-are not a stability or zero-drop guarantee.
+The temporary UART connection subsequently captured an SCCB write timeout
+(`ret:263`, `ESP_ERR_TIMEOUT`) during restart, followed by camera probe failure.
+Another restart reported successful configuration but never returned a frame.
+These observations identify failures in the full restart path; the underlying
+hardware/SDK cause is not proven. These short measurements are not a stability
+or zero-drop guarantee.
+
+The current source keeps the driver initialized across configuration changes and
+reports capture timeouts promptly. Recovery now covers errors 2, 6, 7 and 8 with
+the same two-attempt limit; unsupported controls are not retried. Host tests and
+both ESP/four Pico builds pass. **This lifecycle revision still requires upload
+and repeated-switching hardware validation.** The 24 MHz option is available for
+measurement, with the proven 20 MHz default retained.
 
 The optional `zero_camera_uart` diagnostic build reads ESP **U0T/GPIO1 -> Pico
 GP5** at 115200 baud and forwards `ESP:` lines over USB CDC. Connect with power
 off and retain the existing common ground and SPI wires. Open the serial monitor
 before reproducing the failure; output is bounded and can be dropped while CDC
-is closed/full. Normal builds leave GP5 unassigned. This diagnostic is prepared
-and uploaded while the temporary log wire is pending.
+is closed/full. Normal builds leave GP5 unassigned. The diagnostic is uploaded and
+Kate connected the temporary log wire; it captured the errors described above.
 
 Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
 change a sensor setting and restore defaults, reboot either board, close/reopen

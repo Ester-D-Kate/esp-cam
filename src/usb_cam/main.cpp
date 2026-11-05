@@ -48,7 +48,7 @@ void loop() {
   usb_cam::encode_header(counters, header);
   const bool exchanged = camera_link::exchange(header, frame ? frame->buf : nullptr,
                                                frame ? length : 0, response);
-  // Never retain a camera buffer while applying/reinitializing settings.
+  // Never retain a camera buffer while changing sensor settings.
   if (frame) esp_camera_fb_return(frame);
   last_exchange = esp_timer_get_time();
   if (!exchanged) { ++counters.link_timeouts; return; }

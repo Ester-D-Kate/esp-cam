@@ -134,6 +134,7 @@ void diagnostics() {
       "\"desired_token\":%lu,\"applied_token\":%lu,"
       "\"control_error\":%lu,\"control_crc_received\":%lu,\"control_crc_calculated\":%lu,"
       "\"control_prefix\":\"%s\",\"control_spi_hz\":%lu,"
+      "\"camera_starts\":%lu,\"sensor_resets\":%lu,\"xclk_hz\":%lu,"
       "\"config_retries\":%lu,\"config_retry_attempts\":%u}\r\n",
       selected_mode, desired.width, desired.height, unsigned(10000000u / desired.interval_100ns),
       (unsigned long)rx_fps_x10, (unsigned long)usb_fps_x10,
@@ -153,7 +154,9 @@ void diagnostics() {
       (unsigned long)usb_cam::config_token(desired), (unsigned long)rx.sender.config_token,
       (unsigned long)rx.sender.control_error, (unsigned long)rx.sender.control_crc_received,
       (unsigned long)rx.sender.control_crc_calculated, control_prefix,
-      (unsigned long)rx.sender.control_spi_hz, (unsigned long)config_retries, config_retry.attempts());
+      (unsigned long)rx.sender.control_spi_hz, (unsigned long)rx.sender.camera_starts,
+      (unsigned long)rx.sender.sensor_resets, (unsigned long)rx.sender.xclk_hz,
+      (unsigned long)config_retries, config_retry.attempts());
   // A closed/slow serial monitor must never stall the UVC stream.
   if (count > 0 && size_t(count) < sizeof(line) && tud_cdc_write_available() >= uint32_t(count)) {
     tud_cdc_write(line, uint32_t(count));

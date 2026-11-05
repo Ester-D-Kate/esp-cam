@@ -65,6 +65,9 @@ int main() {
   config = Config{};
   config.xclk_mhz = 40;
   assert(!valid_config(config));
+  config.xclk_mhz = 24;
+  encode_config(config, bytes.data());
+  assert(decode_config(bytes.data(), bytes.size(), decoded) && decoded.xclk_mhz == 24);
   config = Config{};
   for (unsigned i = 0; i < kSettingCount; ++i) {
     config.settings[i] = kSettingSpecs[i].minimum;

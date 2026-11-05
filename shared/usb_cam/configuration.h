@@ -9,7 +9,8 @@ constexpr int16_t kDefaultSetting = -32768;
 // Sensor configuration status codes shared with the Pico's recovery policy.
 enum ConfigError : uint32_t {
   kConfigInvalid = 1, kConfigInit = 2, kConfigSensor = 3,
-  kConfigGeometry = 4, kConfigQuality = 5, kConfigFrame = 6
+  kConfigGeometry = 4, kConfigQuality = 5, kConfigFrame = 6,
+  kConfigReset = 7, kConfigClock = 8
 };
 // Stable wire IDs; append new entries without renumbering existing controls.
 #define USB_CAM_SETTINGS(X) \
@@ -47,10 +48,13 @@ inline bool supported_geometry(uint16_t w, uint16_t h) {
   for (const auto& size : sizes) if (size[0] == w && size[1] == h) return true;
   return false;
 }
+inline bool supported_xclk(int mhz) {
+  return mhz == 10 || mhz == 16 || mhz == 20 || mhz == 24;
+}
 inline bool valid_config(const Config& c) {
   if (!supported_geometry(c.width, c.height) || c.interval_100ns < USB_CAM_INTERVAL(60) ||
       c.interval_100ns > 10000000 || c.max_jpeg < 1024 || c.max_jpeg > kMaxJpeg ||
-      c.quality > 50 || (c.xclk_mhz != 10 && c.xclk_mhz != 16 && c.xclk_mhz != 20)) return false;
+      c.quality > 50 || !supported_xclk(c.xclk_mhz)) return false;
   for (unsigned i = 0; i < kSettingCount; ++i) {
     if (c.settings[i] != kDefaultSetting &&
         (c.settings[i] < kSettingSpecs[i].minimum || c.settings[i] > kSettingSpecs[i].maximum)) return false;

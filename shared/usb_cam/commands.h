@@ -35,7 +35,7 @@ inline CommandResult apply_command(const char* line, Config& current) {
       if (use_default || value < 0 || value > 50) return CommandResult::Invalid;
       next.quality = uint8_t(value);
     } else if (named("xclk_mhz")) {
-      if (use_default || (value != 10 && value != 16 && value != 20)) return CommandResult::Invalid;
+      if (use_default || !supported_xclk(int(value))) return CommandResult::Invalid;
       next.xclk_mhz = uint8_t(value);
     } else {
       bool found = false;

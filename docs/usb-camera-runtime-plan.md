@@ -158,6 +158,53 @@ PlatformIO; no dependency upgrade.
   Existing SPI wiring is retained. The temporary extra wire and power/reset are
   needed to capture/reproduce the startup failure without reflashing ESP32.
 
+- UART evidence after Kate connected U0T->GP5: a generation-only VGA request
+  logged successful configuration but stopped producing frames; the old controller
+  stayed at error0 while fb_get timed out every four seconds. A subsequent request
+  logged SCCB_Write timeout263 at sensor0x30/register0x3e, then camera probe failure.
+  The next retry recovered VGA25. Logs: `runtime-uart-live.log` and
+  `runtime-uart-restart.log` under `.pio/usb-cam-research/`.
+- Revise the full-restart policy above: retain camera driver/SCCB/I2S and UXGA
+  PSRAM buffers. In-place resolution/quality changes follow the pinned Arduino
+  CameraWebServer. FPS/generation-only requests avoid sensor writes. Advanced
+  control changes and dirty-state recovery use sensor reset, checked OV2640 SDK
+  overlay, refreshed status, JPEG format, requested geometry/quality/controls.
+  Any failure suppresses capture until a changed request; null fb_get now reports
+  error6 instead of blocking indefinitely. The SDK's existing4-second timeout
+  remains; Pico retries errors2/6/7/8 at most twice with250ms cooldown.
+- Permit live XCLK10/16/20/24 and track success independently of the sensor cache.
+  The pinned f0bb429 ESP32 JPEG DMA setup is XCLK-independent; CameraWebServer
+  uses live set_xclk. Keep20MHz default. OV2640 datasheet lists24MHz typical, but
+  its actual frequency/FPS still needs measurement. Header104/108/112 now report
+  driver-start attempts, sensor-reset attempts and LEDC-reported frequency;
+  bytes116..123 stay reserved. Upload the new Pico decoder before new ESP.
+- Regression tests failed first on the old unnecessary driver restart, rejected
+  24MHz command/config, unhandled frame/reset/clock recovery and rejected diagnostic
+  extension. Revised USB suite passes with ASan/UBSan, servo suite passes, and both
+  ESP/four Pico builds pass. New lifecycle tests exercise no-op/FPS/geometry/
+  quality changes, explicit->default, partial callback failure, frame timeout,
+  reset failure, clock-cache failure, bad JPEG, oversize callback failure and
+  startup recovery. Hardware lifecycle validation and an ESP upload remain pending.
+- Source checks for this revision:
+  [pinned camera lifecycle](https://github.com/espressif/esp32-camera/blob/f0bb429/driver/esp_camera.c),
+  [OV2640 callbacks](https://github.com/espressif/esp32-camera/blob/f0bb429/sensors/ov2640.c),
+  [ESP32 JPEG DMA](https://github.com/espressif/esp32-camera/blob/f0bb429/target/esp32/ll_cam.c),
+  [LEDC clock](https://github.com/espressif/esp32-camera/blob/f0bb429/target/xclk.c),
+  [CameraWebServer](https://github.com/espressif/arduino-esp32/blob/2.0.17/libraries/ESP32/examples/Camera/CameraWebServer/app_httpd.cpp),
+  [OV2640 datasheet](https://docs.espressif.com/projects/esp-dev-kits/en/latest/_static/esp32-s2-kaluga-1/datasheet/Camera_OV2640.pdf).
+- Independent review caught a pinned OV2640 recovery edge case: its bank cache
+  changes before a failed SCCB write is checked. A subsequent reset could skip
+  the physical bank select and write COM7 into the wrong bank. Force a checked
+  full-byte BANK_SEL=1 through public set_reg(0x1ff,0xff,1) before sensor reset.
+  The regression models cached SENSOR/physical DSP and failed first selection;
+  it failed before this fix and passed afterwards. This is a source-verified
+  recovery defect, not proof of the original hardware startup failure's cause.
+- Final independent review found no remaining important source blockers. The
+  expanded CDC report stays within its1536-byte local buffer and2048-byte TX
+  buffer; the new Pico accepts old ESP diagnostic zeros. Full USB/servo tests,
+  both ESP builds and all four Pico builds pass. Upload Pico first, verify old
+  ESP status compatibility, then request the physical ESP programming step.
+
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here
 on the existing feature branch, as explicitly requested and approved.

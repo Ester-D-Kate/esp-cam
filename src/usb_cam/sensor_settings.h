@@ -18,7 +18,11 @@ inline framesize_t framesize_for(uint16_t w, uint16_t h) {
 inline int set_gain_ceiling(sensor_t* s, int value) {
   return s->set_gainceiling(s, gainceiling_t(value));
 }
-inline uint32_t apply_sensor_config(sensor_t* sensor, const Config& c) {
+struct SensorUpdate {
+  bool geometry = true, quality = true, controls = true;
+};
+inline uint32_t apply_sensor_config(sensor_t* sensor, const Config& c,
+                                    SensorUpdate update = {}) {
   if (!valid_config(c)) return kConfigInvalid;
   if (!sensor || (sensor->id.PID != OV2640_PID && sensor->id.PID != OV3660_PID)) return kConfigSensor;
   if (!sensor->set_framesize || !sensor->set_quality) return kConfigSensor;
@@ -35,10 +39,39 @@ inline uint32_t apply_sensor_config(sensor_t* sensor, const Config& c) {
   for (unsigned i = 0; i < kSettingCount; ++i)
     if (c.settings[i] != kDefaultSetting && !setters[i]) return setting_error(Setting(i));
   const framesize_t size = framesize_for(c.width, c.height);
-  if (size == FRAMESIZE_INVALID || sensor->set_framesize(sensor, size)) return kConfigGeometry;
-  if (sensor->set_quality(sensor, c.quality)) return kConfigQuality;
-  for (unsigned i = 0; i < kSettingCount; ++i)
-    if (c.settings[i] != kDefaultSetting && setters[i](sensor, c.settings[i])) return setting_error(Setting(i));
+  if (update.geometry && (size == FRAMESIZE_INVALID || sensor->set_framesize(sensor, size)))
+    return kConfigGeometry;
+  if (update.quality && sensor->set_quality(sensor, c.quality)) return kConfigQuality;
+  if (update.controls) {
+    for (unsigned i = 0; i < kSettingCount; ++i)
+      if (c.settings[i] != kDefaultSetting && setters[i](sensor, c.settings[i])) return setting_error(Setting(i));
+  }
+  return 0;
+}
+inline uint32_t reset_sensor_defaults(sensor_t* sensor) {
+  if (!sensor || !sensor->reset || !sensor->init_status || !sensor->set_pixformat)
+    return kConfigReset;
+  if (sensor->id.PID == OV2640_PID) {
+    // Pinned OV2640 set_bank caches its choice before checking the bus write.
+    // A failed select can make reset write COM7 in the wrong physical bank.
+    // set_reg's full-byte write forces BANK_SEL even when that cache is stale;
+    // its encoded high byte also leaves the cache on the sensor bank.
+    constexpr int sensor_bank_select = 0x1ff;
+    if (!sensor->set_reg || sensor->set_reg(sensor, sensor_bank_select, 0xff, 1))
+      return kConfigReset;
+  }
+  if (sensor->reset(sensor)) return kConfigReset;
+  // Match the pinned SDK's OV2640 startup overlay, without freeing I2S,
+  // SCCB or the framebuffers. Defaults cannot safely be replayed from status:
+  // some cached fields don't have working setters on this sensor.
+  if (sensor->id.PID == OV2640_PID) {
+    if (!sensor->set_gainceiling || !sensor->set_bpc || !sensor->set_wpc || !sensor->set_lenc ||
+        sensor->set_gainceiling(sensor, GAINCEILING_2X) || sensor->set_bpc(sensor, 0) ||
+        sensor->set_wpc(sensor, 1) || sensor->set_lenc(sensor, 1)) return kConfigReset;
+  }
+  // Refresh cached orientation before geometry uses it; never refresh status
+  // after explicit controls, because init_status hardcodes some defaults.
+  if (sensor->init_status(sensor) || sensor->set_pixformat(sensor, PIXFORMAT_JPEG)) return kConfigReset;
   return 0;
 }
 } // namespace usb_cam

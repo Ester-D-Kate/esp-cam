@@ -14,6 +14,7 @@ int main() {
   assert(apply_command("set quality 12", c) == CommandResult::Changed && c.quality == 12);
   assert(apply_command("set xclk_mhz 40", c) == CommandResult::Invalid);
   assert(apply_command("set xclk_mhz 10", c) == CommandResult::Changed && c.xclk_mhz == 10);
+  assert(apply_command("set xclk_mhz 24", c) == CommandResult::Changed && c.xclk_mhz == 24);
   assert(apply_command("set exposure_register 55", c) == CommandResult::Invalid);
   assert(apply_command("set brightness default", c) == CommandResult::Changed);
   assert(c.settings[0] == kDefaultSetting);

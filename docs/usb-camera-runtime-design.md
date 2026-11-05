@@ -66,9 +66,17 @@ Configuration is all-or-error: prevalidate every field and available callback
 before mutation. On any callback failure, stop publishing images, retain the
 last confirmed generation only as historical status, report the attempted
 generation and error, and continue status polling. Do not label partially
-configured images as either the old or the new mode. A changed request (including
-`defaults`) performs a controlled camera reinitialization before applying the
-complete requested state. No automatic retry loop for the same rejected request.
+configured images as either the old or the new mode. Keep the camera peripheral,
+SCCB and UXGA-sized buffers initialized across requests. Apply resolution and
+quality through sensor callbacks; unchanged settings and FPS-only requests need
+no sensor writes. Optional-control changes (including `defaults`) and dirty-state
+recovery reset only the sensor registers, restore the SDK defaults, refresh its
+status cache, then apply JPEG format, geometry, quality and explicit controls.
+Track successfully programmed state separately from desired state. No automatic
+retry loop for an identical rejected request on the ESP; the Pico may issue at
+most two new generations for fresh matching startup/capture/reset/clock failures,
+with 250 ms cooldown. A null framebuffer ends the capture attempt with error 6,
+keeping status polling responsive after the SDK's four-second timeout.
 Advance confirmed generation only after mandatory settings succeed and a fresh
 JPEG validates against requested geometry. Unsupported optional settings reject
 that request explicitly; omitting them uses sensor defaults. This is the builder's
@@ -80,7 +88,12 @@ automatic/manual exposure, exposure level/value, automatic/manual gain and
 ceiling, white balance and mode, lens/gamma/pixel corrections, downsize and
 colorbar. Leave unspecified settings at driver defaults. Report unsupported or
 failed controls instead of silently claiming success. Permit camera XCLK choices
-10/16/20 MHz with a controlled camera restart; keep the proven 20 MHz default.
+10/16/20/24 MHz through the sensor's live clock callback, followed by geometry
+programming; keep the proven 20 MHz default until 24 MHz is measured. This is safe
+for the pinned driver's JPEG DMA sampling path, which is independent of XCLK.
+Track successful clock changes independently of the sensor's mutable cache and
+report the actual LEDC frequency. The 24 MHz choice is an experiment, not an FPS
+guarantee.
 Do not expose arbitrary memory/register writes, PLL overclocking or firmware
 upload through SPI. New firmware bugs or fundamentally new capabilities may
 still require an ESP upload; routine settings do not.

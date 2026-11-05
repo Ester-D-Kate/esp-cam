@@ -21,12 +21,15 @@ int main() {
   put32(bytes.data() + 80, 0x55667788);
   memcpy(bytes.data() + 84, "bad-control-data", 16);
   put32(bytes.data() + 100, 1000000);
+  put32(bytes.data() + 104, 1); // Camera driver initialization attempts.
+  put32(bytes.data() + 108, 2); // In-place sensor reset attempts.
+  put32(bytes.data() + 112, 24003750); // Actual LEDC clock, not just its request.
   put32(bytes.data() + 124, crc32(bytes.data(), 124));
   assert(decode_header(bytes.data(), bytes.size(), decoded));
   std::array<uint8_t, kHeaderSize> roundtrip{};
   encode_header(decoded, roundtrip.data());
   assert(roundtrip == bytes);
-  bytes[104] = 1; // The remaining reserved area is still protected.
+  bytes[116] = 1; // The remaining reserved area is still protected.
   put32(bytes.data() + 124, crc32(bytes.data(), 124));
   assert(!decode_header(bytes.data(), bytes.size(), decoded));
   Config config;

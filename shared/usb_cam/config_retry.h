@@ -1,8 +1,8 @@
 #pragma once
 #include "protocol.h"
 namespace usb_cam {
-// Retry only acknowledged initialization failures, with a finite budget per
-// explicit request. Other errors and an unresponsive link stay visible.
+// Retry acknowledged startup, capture, reset and clock failures, with a finite
+// budget per explicit request. Unsupported settings and a dead link stay visible.
 class ConfigRetry {
  public:
   void new_request(uint32_t status_packets) {
@@ -12,7 +12,9 @@ class ConfigRetry {
     const bool fresh = status_packets != last_status_;
     last_status_ = status_packets;
     const uint32_t token = config_token(desired);
-    if (sender.kind != PacketKind::Status || sender.config_error != kConfigInit ||
+    const bool recoverable = sender.config_error == kConfigInit || sender.config_error == kConfigFrame ||
+                             sender.config_error == kConfigReset || sender.config_error == kConfigClock;
+    if (sender.kind != PacketKind::Status || !recoverable ||
         sender.attempted_generation != desired.generation || sender.attempted_token != token) {
       waiting_ = false;
       return false;

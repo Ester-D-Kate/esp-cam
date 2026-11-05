@@ -34,7 +34,7 @@ int main() {
   assert(!retry.poll(h, 18, desired, 3000000)); // Budget survives automatic generations.
 
   retry.new_request(18);
-  for (uint32_t error : {1u, 3u, 4u, 5u, 6u, 32u}) {
+  for (uint32_t error : {1u, 3u, 4u, 5u, 32u}) {
     h = failed(desired, error);
     assert(!retry.poll(h, error + 100, desired, error * 1000000));
   }
@@ -62,5 +62,19 @@ int main() {
   h = failed(desired);
   assert(!retry.poll(h, 209, desired, 100));
   assert(retry.poll(h, 210, desired, 250100));
+  // Capture timeout, failed sensor reset and clock I/O need the same bounded
+  // recovery as initialization; unsupported controls must not be retried.
+  for (uint32_t error : {6u, 7u, 8u}) {
+    retry.new_request(0);
+    h = failed(desired, error);
+    assert(!retry.poll(h, 1, desired, 100));
+    assert(retry.poll(h, 2, desired, 250100));
+    h = failed(desired, error);
+    assert(!retry.poll(h, 3, desired, 500000));
+    assert(retry.poll(h, 4, desired, 750000));
+    h = failed(desired, error);
+    assert(!retry.poll(h, 5, desired, 1000000));
+    assert(!retry.poll(h, 6, desired, 2000000));
+  }
   puts("Configuration retry passed: freshness, bounded attempts, identity, cancellation and clock wrap.");
 }

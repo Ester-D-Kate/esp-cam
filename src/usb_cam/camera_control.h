@@ -11,8 +11,13 @@ class CameraControl {
   bool can_capture() const { return running_ && session_.can_capture(); }
   uint32_t interval_us() const { return session_.desired().interval_100ns / 10; }
  private:
+  bool initialize(const usb_cam::Config& config);
+  void fail(uint32_t error);
   usb_cam::ConfigSession session_;
-  bool running_ = false;
+  usb_cam::Config programmed_;
+  bool running_ = false, configured_ = false, dirty_ = false, clock_known_ = false;
+  uint8_t xclk_mhz_ = 0;
+  uint32_t camera_starts_ = 0, sensor_resets_ = 0, xclk_hz_ = 0;
   uint8_t quality_ = 16, discard_ = 0, bad_geometry_ = 0;
   uint16_t sensor_pid_ = 0;
 };
