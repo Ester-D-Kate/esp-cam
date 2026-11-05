@@ -31,6 +31,8 @@ Progress:
   with address/undefined-behavior sanitizers; existing servo tests also passed.
 - Independent source review completed. Its pending-ISO restart finding was fixed
   with an upstream-style abort adapter and a failing-then-passing regression test.
-- Firmware artifacts are generated and unflashed. Physical enumeration, sensor
-  output, sustained FPS, latency, wiring/power and soak tests remain for Kate's
-  hardware session using the acceptance procedure in `USB_CAMERA.md`.
+- Both boards were subsequently flashed and verified with VGA30 firmware. Pico
+  UVC/CDC enumeration and diagnostics passed. The revised GP0-GP3/SPI0 receiver
+  was also built, flashed and verified, leaving GP8-GP14 unused. Sensor output,
+  sustained FPS, latency, wiring/power and soak tests remain for Kate's hardware
+  session using the acceptance procedure in `USB_CAMERA.md`.

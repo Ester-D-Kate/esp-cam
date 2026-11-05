@@ -9,8 +9,10 @@ PlatformIO environment; they are excluded from the USB firmware. Branch:
 `codex/usb-cam`, based on `fe4321f`. Work stays in this repository as explicitly
 requested, overriding the general new-project directory preference.
 
-This is untested hardware firmware until flashed. No claim of sustained FPS,
-zero loss, HD/60 FPS, stabilization or equivalence to consumer camera glasses.
+Both boards have been flashed; Pico UVC/CDC enumeration and diagnostics were
+checked. Camera-to-Pico streaming still needs physical wiring and testing. No
+claim of sustained FPS, zero loss, HD/60 FPS, stabilization or equivalence to
+consumer camera glasses.
 
 ## Research and decisions
 
@@ -40,7 +42,8 @@ zero loss, HD/60 FPS, stabilization or equivalence to consumer camera glasses.
   also exposes native `framework = picosdk`, allowing direct TinyUSB/DMA control.
   Use its actual Waveshare RP2040-Zero board definition, plus a Pico environment.
 * [Waveshare RP2040-Zero](https://www.waveshare.com/wiki/RP2040-Zero): use exposed
-  GP8/GP9/GP10 for SPI1 RX/CS/SCK, GP11 for READY. Avoid RGB LED GP16.
+  GP0/GP1/GP2 for SPI0 RX/CS/SCK, GP3 for READY. Reserve GP8 through GP14 per
+  the user's wiring constraint. Avoid RGB LED GP16.
 
 Alternatives considered: SD + Wi-Fi + USB adds contention and pin pressure;
 Pico as SPI master requires a reverse configuration/handshake protocol; generic
@@ -66,8 +69,10 @@ uncompressed video. No automatic quality recovery oscillation within a run.
 
 ## Hardware contract
 
-ESP32 GPIO14 SCK -> Zero GP10; GPIO13 MOSI -> GP8; GPIO15 CS -> GP9;
-Zero GP11 READY -> ESP32 GPIO3; common ground. All signals 3.3 V.
+ESP32 GPIO14 SCK -> Zero GP2; GPIO13 MOSI -> GP0; GPIO15 CS -> GP1;
+Zero GP3 READY -> ESP32 GPIO3; common ground. All signals 3.3 V.
+The receiver uses SPI0, including its RX DMA request. GP8 through GP14 remain
+unused by the Pico firmware. This revises the original SPI1 pinout.
 Remove the SD card and detach servos/gyro for this firmware. GPIO12 remains free,
 but recording/button functionality is not active in the USB build.
 UART TX stays GPIO1. Disconnect programmer TX from GPIO3 during operation and

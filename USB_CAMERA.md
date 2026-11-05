@@ -49,14 +49,16 @@ good light and a correctly focused lens remain essential.
 
 Use GPIO labels, **not physical pin numbers**. Signals are 3.3 V. Keep wires
 short (start below 10 cm) and route ground beside SCK. These pins are available
-on the Waveshare RP2040-Zero; GP16 is its RGB LED and is deliberately unused.
+on the Waveshare RP2040-Zero; GP8 through GP14 are reserved and unused by this
+firmware. GP16 is its RGB LED and is deliberately unused. The SPI0 functions
+follow the [RP2040 datasheet, GPIO functions table](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf).
 
 | ESP32-CAM AI Thinker | Direction | Waveshare RP2040-Zero | Purpose |
 |---|---|---|---|
-| GPIO14 | → | GP10 | SPI1 SCK |
-| GPIO13 | → | GP8 | SPI1 RX / ESP32 MOSI |
-| GPIO15 | → | GP9 | SPI1 CS, active low |
-| GPIO3 / U0R | ← | GP11 | READY / acknowledge |
+| GPIO14 | → | GP2 | SPI0 SCK |
+| GPIO13 | → | GP0 | SPI0 RX / ESP32 MOSI |
+| GPIO15 | → | GP1 | SPI0 CS, active low |
+| GPIO3 / U0R | ← | GP3 | READY / acknowledge |
 | GND | ↔ | GND | Common signal reference |
 
 There is no MISO wire. SPI is **8 MHz, mode 1, MSB first**. READY goes high only
@@ -77,7 +79,7 @@ can be designed after measuring current and checking the exact power circuit;
 this configuration advertises 100 mA for the separately powered USB bridge.
 
 **Programming conflict:** GPIO3 is the ESP32 programming UART RX and the READY
-input. Disconnect GP11 ↔ GPIO3 while flashing ESP32. During normal operation,
+input. Disconnect Pico GP3 ↔ ESP32 GPIO3 while flashing ESP32. During normal operation,
 disconnect the programmer's TX wire from GPIO3, then reconnect READY. Programmer
 RX may remain connected to ESP32 GPIO1 for TX-only logs, with common ground and
 3.3 V UART signaling.
@@ -223,5 +225,10 @@ failing-then-passing regression test and a rebuild of every Pico profile.
 
 Generated default artifacts are `.pio/build/usb_vga30/firmware.bin` (use the
 PlatformIO uploader so all ESP32 images receive the correct offsets) and
-`pico/.pio/build/zero_vga30/firmware.uf2` (BOOTSEL drag-and-drop). Neither board
-has been flashed or physically tested by this implementation session.
+`pico/.pio/build/zero_vga30/firmware.uf2` (BOOTSEL drag-and-drop). Both boards were
+subsequently flashed and verified with the initial VGA30 firmware. The Pico
+enumerated as a UVC camera and CDC diagnostics device at a 125 MHz peripheral
+clock. The revised GP0/GP1/GP2/GP3 VGA30 mapping was also flashed and verified;
+the Pico re-enumerated with working CDC diagnostics. All five Pico profiles
+rebuilt and the USB host tests passed after the remap. The camera-to-Pico link
+still needs testing after wiring.

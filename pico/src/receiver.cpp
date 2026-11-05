@@ -7,10 +7,12 @@
 #include "pico/stdlib.h"
 
 namespace {
-constexpr uint kDataPin = 8;
-constexpr uint kSelectPin = 9;
-constexpr uint kClockPin = 10;
-constexpr uint kReadyPin = 11;
+// SPI0 alternate functions on exposed RP2040-Zero pins; GP8-GP14 stay unused.
+spi_inst_t* const kSpi = spi0;
+constexpr uint kDataPin = 0;
+constexpr uint kSelectPin = 1;
+constexpr uint kClockPin = 2;
+constexpr uint kReadyPin = 3;
 constexpr uint32_t kTransactionTimeoutUs = 250000;
 constexpr size_t kDmaCapacity = usb_cam::kPacketCapacity + 1;
 ReceivedFrame frames[usb_cam::FrameSlots::kCount];
@@ -26,11 +28,11 @@ class Lock {
 
 void clear_spi() {
   // Reset also discards any partial byte left by an interrupted master.
-  spi_deinit(spi1);
-  spi_init(spi1, usb_cam::kSpiHz);
-  spi_set_format(spi1, 8, SPI_CPOL_0, SPI_CPHA_1, SPI_MSB_FIRST);
-  spi_set_slave(spi1, true);
-  spi_get_hw(spi1)->dmacr = SPI_SSPDMACR_RXDMAE_BITS;
+  spi_deinit(kSpi);
+  spi_init(kSpi, usb_cam::kSpiHz);
+  spi_set_format(kSpi, 8, SPI_CPOL_0, SPI_CPHA_1, SPI_MSB_FIRST);
+  spi_set_slave(kSpi, true);
+  spi_get_hw(kSpi)->dmacr = SPI_SSPDMACR_RXDMAE_BITS;
 }
 
 int reserve() {
@@ -96,7 +98,7 @@ void receiver_run() {
   channel_config_set_transfer_data_size(&config, DMA_SIZE_8);
   channel_config_set_read_increment(&config, false);
   channel_config_set_write_increment(&config, true);
-  channel_config_set_dreq(&config, spi_get_dreq(spi1, false));
+  channel_config_set_dreq(&config, spi_get_dreq(kSpi, false));
   for (;;) {
     // Never acknowledge an old/incomplete transaction, including at power-up.
     while (!gpio_get(kSelectPin)) tight_loop_contents();
@@ -104,7 +106,7 @@ void receiver_run() {
     if (slot < 0) { sleep_us(10); continue; }
     ReceivedFrame& frame = frames[slot];
     clear_spi();
-    dma_channel_configure(dma, &config, frame.packet, &spi_get_hw(spi1)->dr, kDmaCapacity, true);
+    dma_channel_configure(dma, &config, frame.packet, &spi_get_hw(kSpi)->dr, kDmaCapacity, true);
     gpio_put(kReadyPin, true);
     // Dedicated core 1 waits for the master; core 0 continues servicing USB.
     while (gpio_get(kSelectPin)) tight_loop_contents();
@@ -114,18 +116,18 @@ void receiver_run() {
       tight_loop_contents();
     }
     const bool timed_out = !gpio_get(kSelectPin);
-    spi_get_hw(spi1)->dmacr = 0;
+    spi_get_hw(kSpi)->dmacr = 0;
     dma_channel_abort(dma);  // No DMA IRQ is enabled (including RP2040-E13).
     size_t count = kDmaCapacity - dma_channel_hw_addr(dma)->transfer_count;
-    bool overflow = (spi_get_hw(spi1)->ris & SPI_SSPRIS_RORRIS_BITS) != 0;
+    bool overflow = (spi_get_hw(kSpi)->ris & SPI_SSPRIS_RORRIS_BITS) != 0;
     // With CS high no further clocks arrive. Account for any residual FIFO bytes
     // after stopping DMA, with bounded storage and explicit overflow detection.
-    for (unsigned i = 0; i < 8 && spi_is_readable(spi1); ++i) {
-      const uint8_t byte = uint8_t(spi_get_hw(spi1)->dr);
+    for (unsigned i = 0; i < 8 && spi_is_readable(kSpi); ++i) {
+      const uint8_t byte = uint8_t(spi_get_hw(kSpi)->dr);
       if (count < kDmaCapacity) frame.packet[count++] = byte;
       else overflow = true;
     }
-    if (spi_is_readable(spi1) || count > usb_cam::kPacketCapacity) overflow = true;
+    if (spi_is_readable(kSpi) || count > usb_cam::kPacketCapacity) overflow = true;
     frame.length = count;
     frame.received_us = time_us_32();
     if (timed_out || overflow) {
