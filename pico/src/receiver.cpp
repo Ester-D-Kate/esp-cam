@@ -1,0 +1,155 @@
+#include "receiver.h"
+#include "usb_cam/frame_slots.h"
+#include "hardware/clocks.h"
+#include "hardware/dma.h"
+#include "hardware/spi.h"
+#include "pico/critical_section.h"
+#include "pico/stdlib.h"
+
+namespace {
+constexpr uint kDataPin = 8;
+constexpr uint kSelectPin = 9;
+constexpr uint kClockPin = 10;
+constexpr uint kReadyPin = 11;
+constexpr uint32_t kTransactionTimeoutUs = 250000;
+constexpr size_t kDmaCapacity = usb_cam::kPacketCapacity + 1;
+ReceivedFrame frames[usb_cam::FrameSlots::kCount];
+usb_cam::FrameSlots slots;
+critical_section_t mutex;
+ReceiverStats stats;
+
+class Lock {
+ public:
+  Lock() { critical_section_enter_blocking(&mutex); }
+  ~Lock() { critical_section_exit(&mutex); }
+};
+
+void clear_spi() {
+  // Reset also discards any partial byte left by an interrupted master.
+  spi_deinit(spi1);
+  spi_init(spi1, usb_cam::kSpiHz);
+  spi_set_format(spi1, 8, SPI_CPOL_0, SPI_CPHA_1, SPI_MSB_FIRST);
+  spi_set_slave(spi1, true);
+  spi_get_hw(spi1)->dmacr = SPI_SSPDMACR_RXDMAE_BITS;
+}
+
+int reserve() {
+  Lock lock;
+  bool replaced = false;
+  const int slot = slots.begin_receive(replaced);
+  if (replaced) ++stats.replaced;
+  return slot;
+}
+
+void validate(int slot) {
+  ReceivedFrame& frame = frames[slot];
+  {
+    Lock lock;
+    slots.received(slot);
+    const int validating = slots.begin_validate();
+    assert(validating == slot);  // This single producer validates each arrival.
+    (void)validating;
+  }
+  const bool valid = usb_cam::decode_header(frame.packet, frame.length, frame.header) &&
+      frame.length == usb_cam::kHeaderSize + frame.header.payload_size &&
+      usb_cam::validate_payload(frame.header, frame.packet + usb_cam::kHeaderSize, frame.header.payload_size);
+  Lock lock;
+  if (!valid) {
+    ++stats.invalid;
+    slots.release(slot);
+    return;
+  }
+  if (stats.frames) {
+    const uint32_t delta = frame.header.sequence - stats.last_sequence;
+    if (delta > 0x80000000u) ++stats.sender_resets;
+    else if (delta > 1) stats.sequence_gaps += delta - 1;
+  }
+  stats.last_sequence = frame.header.sequence;
+  ++stats.frames;
+  if (frame.header.payload_size > stats.max_bytes) stats.max_bytes = frame.header.payload_size;
+  slots.publish(slot);
+}
+}  // namespace
+
+void receiver_init() { critical_section_init(&mutex); }
+
+void receiver_run() {
+  gpio_init(kReadyPin);
+  gpio_put(kReadyPin, false);
+  gpio_set_dir(kReadyPin, GPIO_OUT);
+  gpio_set_function(kDataPin, GPIO_FUNC_SPI);
+  gpio_set_function(kSelectPin, GPIO_FUNC_SPI);
+  gpio_set_function(kClockPin, GPIO_FUNC_SPI);
+  gpio_pull_up(kSelectPin);
+  gpio_pull_down(kClockPin);
+  const uint32_t peripheral_hz = clock_get_hz(clk_peri);
+  {
+    Lock lock;
+    stats.peripheral_hz = peripheral_hz;
+  }
+  // RP2040 datasheet: SPI slave clock <= clk_peri / 12.
+  if (peripheral_hz < usb_cam::kSpiHz * 12) {
+    for (;;) tight_loop_contents();  // READY remains low; CDC reports the clock.
+  }
+  const int dma = dma_claim_unused_channel(true);
+  dma_channel_config config = dma_channel_get_default_config(dma);
+  channel_config_set_transfer_data_size(&config, DMA_SIZE_8);
+  channel_config_set_read_increment(&config, false);
+  channel_config_set_write_increment(&config, true);
+  channel_config_set_dreq(&config, spi_get_dreq(spi1, false));
+  for (;;) {
+    // Never acknowledge an old/incomplete transaction, including at power-up.
+    while (!gpio_get(kSelectPin)) tight_loop_contents();
+    const int slot = reserve();
+    if (slot < 0) { sleep_us(10); continue; }
+    ReceivedFrame& frame = frames[slot];
+    clear_spi();
+    dma_channel_configure(dma, &config, frame.packet, &spi_get_hw(spi1)->dr, kDmaCapacity, true);
+    gpio_put(kReadyPin, true);
+    // Dedicated core 1 waits for the master; core 0 continues servicing USB.
+    while (gpio_get(kSelectPin)) tight_loop_contents();
+    gpio_put(kReadyPin, false);  // Acknowledge only after RX DMA has been armed.
+    const uint32_t started = time_us_32();
+    while (!gpio_get(kSelectPin) && uint32_t(time_us_32() - started) < kTransactionTimeoutUs) {
+      tight_loop_contents();
+    }
+    const bool timed_out = !gpio_get(kSelectPin);
+    spi_get_hw(spi1)->dmacr = 0;
+    dma_channel_abort(dma);  // No DMA IRQ is enabled (including RP2040-E13).
+    size_t count = kDmaCapacity - dma_channel_hw_addr(dma)->transfer_count;
+    bool overflow = (spi_get_hw(spi1)->ris & SPI_SSPRIS_RORRIS_BITS) != 0;
+    // With CS high no further clocks arrive. Account for any residual FIFO bytes
+    // after stopping DMA, with bounded storage and explicit overflow detection.
+    for (unsigned i = 0; i < 8 && spi_is_readable(spi1); ++i) {
+      const uint8_t byte = uint8_t(spi_get_hw(spi1)->dr);
+      if (count < kDmaCapacity) frame.packet[count++] = byte;
+      else overflow = true;
+    }
+    if (spi_is_readable(spi1) || count > usb_cam::kPacketCapacity) overflow = true;
+    frame.length = count;
+    frame.received_us = time_us_32();
+    if (timed_out || overflow) {
+      Lock lock;
+      if (timed_out) ++stats.timeouts;
+      else ++stats.invalid;
+      slots.release(slot);
+    } else {
+      validate(slot);
+    }
+    // On timeout CS may remain low. The top-of-loop gate keeps READY low until
+    // the sender releases it; clear_spi then resets the receive shift register.
+  }
+}
+
+ReceivedFrame* receiver_take_latest() {
+  Lock lock;
+  const int slot = slots.take_latest(&stats.replaced);
+  return slot < 0 ? nullptr : &frames[slot];
+}
+
+void receiver_release(ReceivedFrame* frame) {
+  Lock lock;
+  slots.release(int(frame - frames));
+}
+
+ReceiverStats receiver_stats() { Lock lock; return stats; }

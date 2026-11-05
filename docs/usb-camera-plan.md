@@ -1,0 +1,36 @@
+# USB POV camera implementation plan
+
+Goal: build paired PlatformIO firmware for a measured USB-only camera prototype.
+Spec: [usb-camera-design.md](usb-camera-design.md).
+Execute inline; user authorized implementation and delegated routine choices.
+
+1. Shared protocol and profiles (`shared/usb_cam/`), with host tests first:
+   explicit byte encoding, CRC, JPEG geometry and bounded frame-slot ownership.
+   Validate malformed lengths/profile mismatches, corruption, slow USB,
+   disconnects and sequence wrap. Run `sh test/run-usb-cam-tests.sh`.
+2. ESP32 transmitter (`src/usb_cam/`), separate PlatformIO environments:
+   sensor JPEG capture, validated frames, DMA staging, bounded READY/CS waits,
+   timeout recovery, configurable profiles and counters. Build all profiles.
+3. RP2040 receiver (`pico/`): pinned native Pico SDK PlatformIO configuration,
+   three-slot DMA receiver, dual-core synchronization, UVC/CDC descriptors and
+   diagnostics. Build Zero profiles and the Pico variant. Host-check descriptors.
+4. Integration: run existing servo tests and legacy build, review changes with a
+   fresh reviewer, fix important findings, write build evidence and hardware
+   acceptance instructions in `USB_CAMERA.md`. Keep firmware unflashed for Kate.
+
+Review focus: DMA/CS edge races; USB buffer lifetime across stop/unplug/reopen;
+profile/dimension mismatch; sender/receiver reboot; boot pin and power conflicts.
+
+Progress:
+- Research and branch creation complete; baseline servo tests passed.
+- Current scope is USB-only per user's POV quality priority, superseding the
+  earlier simultaneous SD/Wi-Fi proposal. Existing legacy files remain available.
+- Shared protocol, ESP32 sender, Pico receiver, UVC/CDC integration and user guide
+  complete. All five ESP32 and five Pico build environments passed on 2026-11-05.
+- Protocol, descriptor, timing/slot ownership and ISO restart host tests passed
+  with address/undefined-behavior sanitizers; existing servo tests also passed.
+- Independent source review completed. Its pending-ISO restart finding was fixed
+  with an upstream-style abort adapter and a failing-then-passing regression test.
+- Firmware artifacts are generated and unflashed. Physical enumeration, sensor
+  output, sustained FPS, latency, wiring/power and soak tests remain for Kate's
+  hardware session using the acceptance procedure in `USB_CAMERA.md`.

@@ -1,0 +1,6 @@
+{
+  "folders": [
+    { "name": "ESP32-CAM", "path": "." },
+    { "name": "RP2040-Zero", "path": "pico" }
+  ]
+}
