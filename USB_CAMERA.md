@@ -285,14 +285,14 @@ reports capture timeouts promptly. Recovery now covers errors 2, 6, 7 and 8 with
 the same two-attempt limit; unsupported controls are not retried. Host tests and
 both ESP/four Pico builds pass. **The ESP runs lifecycle revision `4735f12`.**
 Pico revision `e7ea38d` added passive SPI pin levels; the subsequent UXGA and bulk
-termination repair is recorded below. The uploads were verified. Kate confirmed
-that the attached sensor is OV2640, not OV3660.
+termination repair is recorded below. The uploads were verified. The attached
+sensor for these checks was OV2640; the later OV3660 check is recorded below.
 Remaking IO13->GP0, IO15->GP1 and IO14->GP2 restored communication after reassembly.
 Post-update tests decoded all nine sizes at both 20 and 24 MHz. Ten additional
 large/small resolution changes passed with OBS closed. The driver stayed
 initialized once throughout; no capture errors or configuration retries occurred.
 The 20 MHz startup default is retained; 24 MHz can be selected through Pico CDC
-without reflashing the ESP. OV3660 still has no physical test results.
+without reflashing the ESP. The first OV3660 device-side measurement appears below.
 
 The optional `zero_camera_uart` diagnostic build reads ESP **U0T/GPIO1 -> Pico
 GP5** at 115200 baud and forwards `ESP:` lines over USB CDC. Connect with power
@@ -507,6 +507,29 @@ Final read-only diagnostics confirmed OBS's 1280x720/15 configuration applied
 at 20 MHz, with 63 additional USB completions over approximately five seconds
 and no new capture, oversize, invalid-packet, SPI-timeout or USB-restart errors.
 This confirms ongoing device transfers, not an OBS-internal decoded FPS result.
+
+### First OV3660 hardware check — 2026-11-06
+
+After Kate fitted the OV3660, the installed ESP automatically detected PID
+`0x3660` (13920). No code, firmware, wiring or runtime settings were changed for
+this check. OBS already owned the camera at 1600x1200 / requested 15 FPS, so
+only the independent CDC diagnostics were read; no second video client opened.
+
+Over 59.002 seconds between diagnostic samples, 737 JPEG frames were received
+and completed over USB: **12.49 FPS** at XCLK 20 MHz, JPEG quality parameter 28.
+The maximum measured USB-completion gap was **136.025 ms**. The selected mode
+remained constant, desired/applied generations matched throughout, and
+`config_error` was zero. Capture errors, oversized discards, invalid packets,
+SPI timeouts, USB restarts, configuration retries, camera starts and sensor
+resets did not increase. Earlier cumulative counters already included seven
+oversized frames, one invalid packet and two USB restarts; this is not a
+zero-error claim for the period before measurement.
+
+These are device-side delivery measurements while OBS was active, not a host
+decode/FPS/latency measurement or a resolution-switching/long-soak pass. The
+existing menu still ends at 1600x1200; fitting this sensor does not add USB
+modes automatically. Evidence: `20261106-033606-ov3660-live-obs.json` under
+`~/Desktop/Codex-projects/esp-cam-validation/`. OBS was left in control.
 
 ## Source and design
 

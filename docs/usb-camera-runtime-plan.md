@@ -408,3 +408,18 @@ are completed passes; an uninterrupted five-minute post-repair soak and new
 smaller-mode hardware sweep remain unverified. The host suite covers every
 advertised mode/interval and both menu variants. This boundary is documented
 in USB_CAMERA.md rather than treating the interrupted soak as a firmware pass.
+
+## First physical OV3660 confirmation — 2026-11-06
+
+Kate fitted OV3660. CDC and forwarded ESP logs confirm sensor PID 0x3660 with
+the existing ESP lifecycle image and Pico `54061c3` firmware; no upload or
+runtime setting change was necessary. OBS was active, so no competing video
+capture was started. A 60-second read-only diagnostic collection contains
+59.002 seconds between first/last samples, 737 received/USB-completed frames
+(12.49 FPS), at 1600x1200/requested 15 FPS, 20 MHz, quality 28. Maximum USB
+completion gap was 136.025 ms. Mode and confirmed configuration stayed constant;
+capture/oversize/invalid/SPI-timeout/USB-restart/retry/start/reset counter deltas
+were zero. Saved evidence: Desktop validation directory,
+`20261106-033606-ov3660-live-obs.json`. This establishes detection and device-side
+streaming for this mode, not all-mode support, host-decoded FPS or long-term
+stability. OBS and the installed firmware were left unchanged.
