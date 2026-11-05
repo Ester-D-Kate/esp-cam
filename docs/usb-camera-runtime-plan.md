@@ -243,6 +243,18 @@ PlatformIO; no dependency upgrade.
   pending; do not claim OV3660 has been detected or measured yet. Both OV2640
   and OV3660 remain automatically supported by the same ESP image.
 
+- Kate corrected the reassembly reply: the attached sensor is OV2640, not
+  OV3660. After reconnection the ESP's UART log reaches Pico GP5 and shows the
+  application running, but no SPI header/frame has arrived (status_packets0,
+  rx_bytes0, sensor_pid0, camera_starts0). The Pico reports one receive timeout.
+  Restarted its existing application through CDC bootsel + picotool reboot,
+  without reflashing; the same state persisted. This precedes sensor setup,
+  so it is not evidence of a camera initialization failure. Logs:
+  `ov2640-new-firmware-startup-2026-11-06.log` and
+  `ov2640-reconnect-restart-2026-11-06.log` under `.pio/usb-cam-research/`.
+  Next physical check: ESP IO15->Pico GP1 chip select and ESP IO3->GP3 READY,
+  with ESP removed from programmer and power off during wiring inspection.
+
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here
 on the existing feature branch, as explicitly requested and approved.
