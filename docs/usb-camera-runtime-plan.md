@@ -451,3 +451,14 @@ OV3660 timing/cropping profiles, 1080p/3MP and 120-FPS requests exceed the
 installed ESP contract and would need a deliberately prepared ESP capability
 update. No such firmware change or upload was made during this feasibility
 investigation. Avoid copying an old issue's PLL recipe as a validated preset.
+
+Follow-up comparison held quality 28 explicitly at both clocks: 20 MHz delivered
+12.55 USB FPS over 30.999 s with mean 50,186-byte JPEGs; 24 MHz delivered 11.13
+over 30.001 s with mean 50,392-byte JPEGs. Neither added capture/oversize/invalid/
+SPI-timeout/USB-restart errors. Short uncontrolled-scene evidence supports
+retaining 20 MHz, not promoting 24 MHz or claiming a known cause of the rate
+drop. Finished at 20 MHz with explicit quality override 28, matching the prior
+compression level for this UXGA mode. The override persists across mode changes;
+documented the difference from prior adaptive quality and the `defaults`/reboot
+reset behavior. No firmware upload. Evidence:
+`20261106-034858-ov3660-fixed-quality-clock.json` in the Desktop validation folder.

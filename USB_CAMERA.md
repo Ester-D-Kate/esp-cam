@@ -596,6 +596,24 @@ directory: `20261106-034131-ov3660-clock-comparison.json` and
 `20261106-034357-ov3660-clock-repeat.json`. A controlled resolution/FPS sweep
 still requires the test application to have sole camera ownership.
 
+A final comparison held JPEG quality **28** explicitly at both clocks:
+
+| XCLK | Measured interval | USB-completed FPS | Mean JPEG bytes | Maximum completion gap |
+|---|---:|---:|---:|---:|
+| 20 MHz | 30.999 s | 12.55 | 50,186 | 135.307 ms |
+| 24 MHz | 30.001 s | 11.13 | 50,392 | 119.560 ms |
+
+Quality stayed at 28 throughout both windows. Capture, oversize, invalid,
+SPI-timeout and USB-restart counter deltas were all zero. This short comparison
+does not establish maximum performance or control lighting/exposure, but gives
+no basis to promote 24 MHz as faster for this OV3660 mode. It also does not
+identify which capture stage explains the lower rate. Restored **20 MHz and
+left an explicit quality-28 override** to retain the pre-test compression and
+full-resolution behavior. Unlike the earlier adaptive state, this quality
+request will persist across mode changes until `defaults` or a Pico reboot;
+`defaults` also resets the other optional controls. Firmware and OBS mode remain
+unchanged. Evidence: `20261106-034858-ov3660-fixed-quality-clock.json`.
+
 ## Source and design
 
 - [Approved runtime design](docs/usb-camera-runtime-design.md) and
