@@ -82,6 +82,10 @@ ESP contract can still require a future ESP upload.
 Select **MJPEG Video** / **ESP32 POV Camera** as the video device. Where the host
 application offers it, use custom resolution/FPS rather than a fixed preset.
 Changing a mode briefly pauses capture while the real sensor is reconfigured.
+Use one capture application at a time when validating modes. In the hardware
+tests, OBS changed the format while FFmpeg was capturing, causing mismatched
+frame sizes and macOS device-configuration lock errors. Closing OBS allowed all
+ten repeated open/change/close tests to pass without a firmware change.
 
 | Resolution | Available requested FPS |
 |---|---|
@@ -99,7 +103,24 @@ These rates are requests, not guaranteed measured output. Sensor exposure,
 scene detail, JPEG compression, SPI and full-speed USB constrain delivery.
 The `zero_camera_fast` experiment additionally offers 60 FPS at 160x120 and
 320x240, without changing ESP firmware. Do not treat it as a validated 60 FPS
-camera. The standard build omits that unmeasured option.
+camera. The standard build omits that experimental option; the diagnostic build
+also includes it. See the hardware measurements below for delivered rates.
+
+For the tested OV2640, these are practical starting points. Measurements used
+requested XCLK 24 MHz, selected with `set xclk_mhz 24` on Pico CDC. That setting
+is held in RAM; a Pico power cycle restores the 20 MHz startup default.
+
+| Use | OBS custom resolution / requested FPS | Measured decoded FPS |
+|---|---|---:|
+| General POV / motion | 640x480 / 30 | about 28.5 |
+| More detail with near-30-FPS motion | 800x600 / 30 | about 27 |
+| Fastest motion, less detail | 320x240 / 60 (experimental menu) | about 57 |
+| Higher resolution, slower motion | 1280x720 / 15 | about 13 |
+| Full OV2640 resolution, slower video | 1600x1200 / 10 | about 9.7–9.8; brief gaps remain |
+
+Avoid 1600x1200 / 15 for dependable continuous capture with the current firmware:
+the longer tests below reproduced a frozen feed at both 20 and 24 MHz. These
+bench results do not certify a moving POV scene or constant FPS in all lighting.
 
 JPEG data stays compressed from the sensor to USB. Three fixed 64 KiB buffers
 bound Pico RAM. The selected interval also sets a conservative 720 KiB/s frame
@@ -107,6 +128,13 @@ budget. If a frame exceeds its budget, it is counted and compression increases
 (up to quality value 50). Smaller quality numbers mean better JPEG quality.
 Changing modes resets to that mode's default unless an explicit quality override
 is active. The firmware never upscales or repeats a frame to inflate FPS.
+The frame-size limit is 49,151 bytes at a requested 15 FPS and 65,536 bytes at
+10 FPS. If even quality 50 produces a larger JPEG, that frame is discarded.
+Consecutive oversized frames can therefore freeze the displayed image while
+the camera and SPI status channel remain healthy. This condition was reproduced
+at 1600x1200/15; a zero `config_error` alone does not prove video is flowing.
+Reducing the requested rate to 10 allows larger JPEGs but is not a zero-drop
+guarantee. Monitor actual `rx_frames`, `usb_frames` and `oversized` counters.
 
 ## Pico-controlled settings
 
@@ -134,7 +162,7 @@ across power cycles is needed; ESP firmware stays the same.
 | Setting | Accepted values |
 |---|---|
 | `quality` | 0–50 (lower is better; actual compression may rise to meet budget) |
-| `xclk_mhz` | 10, 16, 20, 24; default 20; live clock update, 24 MHz needs bench validation |
+| `xclk_mhz` | 10, 16, 20, 24; default 20; live clock update; see measured 24 MHz results below |
 | `brightness`, `contrast`, `saturation`, `sharpness`, `ae_level` | -2–2 |
 | `denoise` | 0–8, only if supported by the attached sensor |
 | `hmirror`, `vflip`, `aec`, `aec2`, `agc`, `awb`, `awb_gain` | 0 or 1 |
@@ -232,8 +260,8 @@ Short macOS USB decode measurements with XCLK 20 MHz:
 | 480x320, 640x480, 800x600 | 30 | 25 |
 | 1024x768, 1280x720, 1280x1024, 1600x1200 | 15 | 12.5 |
 
-**All nine sizes have decoded individually, but repeated mode switching is not
-yet reliable.** Sensor initialization sometimes fails with error 2. Pico commit
+**The older ESP firmware decoded all nine sizes but had intermittent failures
+during repeated mode switching.** Sensor initialization sometimes failed with error 2. Pico commit
 `5976ace` adds two bounded retries after a fresh, matching error and 250 ms pause;
 `config_retries` counts retries and `config_retry_attempts` shows the current
 request's used budget. Manual generation-only retries recovered ten VGA trials,
@@ -248,12 +276,15 @@ or zero-drop guarantee.
 The current source keeps the driver initialized across configuration changes and
 reports capture timeouts promptly. Recovery now covers errors 2, 6, 7 and 8 with
 the same two-attempt limit; unsupported controls are not retried. Host tests and
-both ESP/four Pico builds pass. **Both boards now have lifecycle revision
-`4735f12` uploaded with flash verification.** The ESP upload completed on
-2026-11-06 for the requested OV3660 test; reassembly, sensor identification and
-post-update switching validation are pending. The Pico was previously verified
-decoding old ESP status and VGA video. The
-24 MHz option is available for measurement, with the proven 20 MHz default retained.
+both ESP/four Pico builds pass. **The ESP runs lifecycle revision `4735f12`;
+the Pico runs `e7ea38d`, which also reports passive SPI pin levels.** Both uploads
+were verified. Kate confirmed that the attached sensor is OV2640, not OV3660.
+Remaking IO13->GP0, IO15->GP1 and IO14->GP2 restored communication after reassembly.
+Post-update tests decoded all nine sizes at both 20 and 24 MHz. Ten additional
+large/small resolution changes passed with OBS closed. The driver stayed
+initialized once throughout; no capture errors or configuration retries occurred.
+The 20 MHz startup default is retained; 24 MHz can be selected through Pico CDC
+without reflashing the ESP. OV3660 still has no physical test results.
 
 The optional `zero_camera_uart` diagnostic build reads ESP **U0T/GPIO1 -> Pico
 GP5** at 115200 baud and forwards `ESP:` lines over USB CDC. Connect with power
@@ -299,11 +330,103 @@ Finished at VGA, quality parameter 16, desired/applied generation 30. Logs under
 `ov2640-switching-2026-11-06.log`, `ov2640-steady-2026-11-06.log`.
 Only diagnostics were saved; decoded video was discarded.
 
-Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
-change a sensor setting and restore defaults, reboot either board, close/reopen
-applications and run a 30-minute moving-scene soak. Measure actual frames and
-losses; use a filmed stopwatch to measure end-to-end latency. No captured audio
-or footage is needed for the automated decode checks.
+### Persistent-driver and high-resolution checks — 2026-11-06
+
+With ESP `4735f12` and Pico `e7ea38d`, all nine eight-second mode checks passed
+at 20 MHz (1,775 decoded frames), then at requested 24 MHz (2,034 frames).
+LEDC reports 23,981,264 Hz for the latter. Ten further four-second large/small
+mode changes passed after closing OBS. Three no-op quality commands did not
+reset the sensor; brightness override/default performed two sensor-only resets.
+`camera_starts` remained 1 and `capture_errors` remained 0 throughout.
+
+Kate subsequently reported pauses at 1600x1200. Longer tests reproduced a
+complete lack of video despite successful configuration and a responsive status
+channel. At 24 MHz, over 119 seconds between diagnostic samples, `oversized`
+increased by 1,753 while both received and USB frame counters stayed fixed.
+At 20 MHz, a separate test discarded 1,113 frames with the same symptom.
+Neither interval added capture errors, invalid packets, SPI timeouts or USB
+restarts. The source confirms that these frames are deliberately rejected by
+the 48 KiB per-frame budget at requested 15 FPS after compression reaches 50.
+This is a demonstrated firmware size-limit failure, not evidence that the
+sensor or ESP has stopped running. It is also independent of the host conflict
+seen earlier while OBS and FFmpeg were both controlling the device.
+
+Switching to 10 FPS raises the allowed JPEG size to 64 KiB. The first 90-second
+UXGA test then delivered 873 decoded frames, about 9.68 FPS after startup, at
+quality 28. No further oversized frames were discarded after adaptation.
+Decoded-frame arrival gaps nevertheless reached 369 ms; the corresponding
+presentation-timestamp gap reached 401 ms. A successful decode does not mean
+perfect pacing. Device counters averaged 9.97 FPS in that steady interval,
+indicating additional losses or delays between USB completion and the decoder.
+The exact cause of each short gap was not isolated.
+
+Initial sustained tests used FFmpeg's AVFoundation input with UYVY output:
+
+| Resolution / requested FPS | Duration | Decoded frames | Steady decoded FPS | Largest steady arrival gap |
+|---|---:|---:|---:|---:|
+| 1600x1200 / 10 | 90 s | 873 | 9.68 | 369 ms |
+| 1280x1024 / 15 | 90 s | 1,108 | 12.33 | 205 ms |
+| 1280x720 / 15 | 90 s | 1,185 | 13.17 | 240 ms |
+
+Repeating with NV12, the pixel format observed in OBS's log, produced these
+results at requested 24 MHz. These are FFmpeg/AVFoundation measurements, not
+measurements taken inside OBS itself:
+
+| Resolution / requested FPS | Duration | Decoded frames | Steady decoded FPS | Largest steady arrival gap |
+|---|---:|---:|---:|---:|
+| 1600x1200 / 10 | 90 s | 884 | 9.80 | 289 ms |
+| 640x480 / 30 | 90 s | 2,567 | 28.47 | 116 ms |
+| 320x240 / 60 | 90 s | 5,105 | 56.70 | 47 ms |
+| 800x600 / 25 | 90 s | 1,753 | 19.45 | 144 ms |
+| 800x600 / 30 | 60 s | 1,627 | 27.10 | 127 ms |
+| 800x600 / 30 | 300 s | 8,173 | 27.24 | 132 ms |
+
+Only the UXGA NV12 test had steady gaps over 250 ms (four, counting either
+arrival or presentation-timestamp gaps); none had an arrival gap over 500 ms.
+Every steady interval in this table had zero increments in oversized frames,
+capture errors, invalid packets, SPI timeouts, USB restarts, sequence gaps and
+replaced frames. Short host-visible gaps remain, so a clean device counter is
+not sufficient to claim perfect end-to-end pacing.
+
+The UYVY steady windows also had no increments in those counters.
+These observations exclude startup/mode transitions: the cumulative
+invalid counter rose from 1 to 8 across the broader session, with six header
+errors and two length errors. There were also three receive timeouts and USB
+recovery events outside these steady windows. Their individual causes were not
+isolated, so this is not a zero-error transport claim.
+
+The five-minute SVGA run stayed at quality 20 and decoded continuously. Its
+largest steady presentation-timestamp gap was 161 ms; there were no steady
+arrival or timestamp gaps over 250 ms. All the listed error/discard counters
+also stayed unchanged from the first diagnostic sample to the last, including
+the startup portion of this run. Sensor initialization remained at one driver
+start and two earlier, deliberate sensor resets.
+
+At 800x600, requesting 30 FPS gave better measured throughput than requesting
+25 in this scene. The tighter 30-FPS size budget raised adaptive quality from
+14 to 20 (stronger compression), reducing the delivered JPEG size from about
+28.5 kB to 23.2 kB. Requested rate, compression and actual throughput interact;
+do not assume that lowering the requested rate always improves smoothness.
+
+The measurement tool records decoded-frame arrival times, presentation
+timestamps and one-second firmware counters; it excludes the first three
+seconds of decoded timestamps from steady statistics. Video and audio are not
+saved. Reproducible script and detailed JSON records are in
+`~/Desktop/Codex-projects/esp-cam-validation/`. Earlier mode-sweep logs remain
+under `.pio/usb-cam-research/`.
+
+The saved script includes uv dependency metadata. To reproduce a diagnostics-only
+test with OBS closed, run:
+
+```sh
+uv run ~/Desktop/Codex-projects/esp-cam-validation/measure_stream.py \
+  --seconds 90 --clock 24 --pixel-format nv12 800x600:30
+```
+
+Remaining wearable acceptance includes a 30-minute moving-scene soak, testing
+expected lighting/power conditions and measuring end-to-end latency with a
+filmed stopwatch. Inter-frame gaps measured here are not latency measurements.
+No captured audio or footage is needed for the automated decode checks.
 
 ## Source and design
 

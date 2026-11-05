@@ -268,6 +268,54 @@ PlatformIO; no dependency upgrade.
   existing research directory. Next physical check: remake/trace all three SPI
   wires, IO13->GP0, IO15->GP1, IO14->GP2, retaining READY/return/common ground.
 
+- After Kate remade IO13->GP0, IO15->GP1 and IO14->GP2, SPI resumed and the
+  connected OV2640 reported PID 0x26. ESP remains at lifecycle commit `4735f12`;
+  Pico remains at `e7ea38d`. Both nine-mode sweeps passed (20 MHz: 1,775 decoded
+  frames; requested 24 MHz: 2,034). Actual clock is 23,981,264 Hz at requested
+  24 MHz. Three no-op quality
+  requests avoided resets; brightness override/default caused two sensor resets
+  while camera_starts stayed 1. No capture errors or configuration retries.
+- A repeated mode test conflicted with OBS changing formats and locking the
+  device. Confirmed the overlapping OBS log and active process; Kate closed OBS.
+  Ten repeated four-second large/small mode tests then passed without firmware
+  changes. Do not interpret the earlier harness's process exit 0 as a pass: its
+  individual mode results included failures, and the new gap-measurement tool
+  returns failure on unsuccessful decode or timeout.
+- Kate requested autonomous investigation of high-resolution pauses while away.
+  Reproduced 1600x1200/15 receiving no video at both 24 MHz (119 seconds between
+  diagnostic samples, 1,753 oversized discards) and 20 MHz (1,113 discards). In both intervals
+  received/USB frame counters were fixed; capture errors, invalid packets, SPI
+  timeouts and USB restarts did not increase. Source rejects JPEGs over 49,151
+  bytes for requested 15 FPS, even after adaptive quality reaches 50. This explains
+  a prolonged frozen image while configuration/status still appear healthy.
+- Selecting 1600x1200/10 raises max_jpeg to 65,536 without reflashing. A 90-second
+  UYVY decode delivered 873 frames/~9.68 FPS, quality 28, zero further oversized
+  discards after adaptation, but maximum 369 ms arrival/401 ms PTS gaps. Separate
+  90-second 1024p/15 and 720p/15 decodes delivered 1,108 and 1,185 frames (~12.33 and
+  13.17 FPS), maximum 205/240 ms arrival gaps. All their steady-window transport,
+  capture and oversized counters remained unchanged. These are not zero-drop
+  or moving-POV guarantees; see USB_CAMERA.md for the fuller measurements.
+- New measurement script and timestamp/counter JSON files are under Kate's
+  requested `~/Desktop/Codex-projects/esp-cam-validation/` directory. No audio
+  or footage is stored. Existing short-sweep logs remain in the ignored research
+  directory. Firmware has not changed during these measurements; the default
+  clock is still 20 MHz, and the 24 MHz selection is volatile Pico-controlled state.
+- Completed OBS-style NV12 checks through FFmpeg/AVFoundation at 24 MHz:
+  UXGA/10: 884 frames/90 s (~9.80 FPS, maximum 289 ms arrival gap);
+  VGA/30: 2,567/90 s (~28.47 FPS, 116 ms); QVGA/60: 5,105/90 s (~56.70 FPS, 47 ms);
+  SVGA/25: 1,753/90 s (~19.45 FPS, 144 ms); SVGA/30: 1,627/60 s (~27.10 FPS, 127 ms).
+  Every steady window had unchanged discard/error/restart counters. These are
+  host-decoder measurements, not OBS-internal FPS or end-to-end latency.
+- The longer SVGA/30 check completed 300 seconds with 8,173 decoded frames (~27.24 FPS),
+  largest steady arrival gap 132 ms and PTS gap 161 ms, no gaps over 250 ms, and no
+  changes to oversized/capture/invalid/SPI-timeout/USB-restart/sequence-gap/
+  replaced counters throughout. Camera starts 1 and sensor resets 2 stayed fixed.
+  Results and practical OBS presets are recorded in USB_CAMERA.md. A moving
+  wearable test remains outside this unattended bench check. The saved tool now
+  has uv metadata with pinned pyserial 3.5 and was verified through uv.
+- Final VGA/30 check through uv decoded 231 frames in eight seconds. Left runtime
+  configuration at VGA/30, requested 24 MHz, quality 16, generation 63 confirmed.
+
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here
 on the existing feature branch, as explicitly requested and approved.
