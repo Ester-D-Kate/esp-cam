@@ -747,8 +747,20 @@ configuration retries and command errors had **zero new increments** during the
 sequence. This is a compatibility smoke test, not a sustained FPS measurement.
 Evidence: `~/Desktop/Codex-projects/esp-cam-validation/sensor-profile-legacy-smoke.json`.
 
-**Deployment still pending:** the ESP capability upgrade has not been flashed.
-FHD/QXGA and new timing controls remain intentionally unavailable on the installed
-old ESP. Their image integrity and performance, plus OV2640 physical regression
-testing, remain to be measured after the ESP upload and relevant sensor fitting.
-The system is left on VGA with no capture test running.
+**At the end of the Pico-only stage:** the ESP capability upgrade had not yet
+been flashed, so extended modes remained withheld. The compatibility test left
+VGA selected with no capture test running.
+
+### ESP capability firmware uploaded (2026-11-06)
+
+After Kate confirmed the ESP was on its programmer in boot mode and OBS was
+closed, PlatformIO uploaded the reviewed `usb_camera` image through
+`/dev/cu.usbserial-2140`. All written segments passed esptool hash verification;
+PlatformIO completed successfully. The application binary SHA256 still matches
+`f6559a422c6fcab3f15647f838aa57f1a65d1c57633d1fb165e77c8f0227b0f6`.
+Upload evidence: `~/Desktop/Codex-projects/esp-cam-validation/sensor-profile-esp-upload.log`.
+
+Both updated firmwares are now installed. Reconnection and normal boot are the
+next physical steps; sensor detection, FHD/QXGA decoding, timing experiments and
+sustained FPS measurements on the upgraded ESP are still pending. This upload
+verification confirms flash contents, not new-mode camera performance.
