@@ -6,7 +6,7 @@
 #define USB_CAM_MODE_COUNT 9
 #define USB_CAM_DEFAULT_MODE 1
 #define USB_CAM_INTERVAL(fps) (10000000u / (fps))
-#define USB_CAM_IS_UXGA(w, h) ((w) == 1600u && (h) == 1200u)
+#define USB_CAM_IS_UXGA(w, h) ((w) >= 1600u && (h) >= 1080u)
 // UXGA uses the full slot; other modes retain the normal byte-rate budget.
 // Round upward because discrete frame intervals are integer 100 ns units.
 #define USB_CAM_MAX_BITRATE(w, h, fps) \
@@ -25,16 +25,38 @@
 #endif
 #define USB_CAM_NORMAL_INTERVALS USB_CAM_INTERVAL(30), USB_CAM_INTERVAL(25), USB_CAM_INTERVAL(20), USB_CAM_INTERVAL(15), USB_CAM_INTERVAL(10), USB_CAM_INTERVAL(5)
 #define USB_CAM_LARGE_INTERVALS USB_CAM_INTERVAL(15), USB_CAM_INTERVAL(10), USB_CAM_INTERVAL(5)
-#define USB_CAM_MODES(X) \
-  X(1, 640, 480, 16, 30, USB_CAM_NORMAL_INTERVALS) \
+#define USB_CAM_COMMON_MODES(X, VGA_RATES, HD_RATES) \
+  X(1, 640, 480, 16, 30, VGA_RATES) \
   X(2, 800, 600, 12, 30, USB_CAM_NORMAL_INTERVALS) \
-  X(3, 1280, 720, 16, 15, USB_CAM_LARGE_INTERVALS) \
+  X(3, 1280, 720, 16, 15, HD_RATES) \
   X(4, 320, 240, 12, 30, USB_CAM_FAST_INTERVALS) \
   X(5, 160, 120, 12, 30, USB_CAM_FAST_INTERVALS) \
   X(6, 480, 320, 12, 30, USB_CAM_NORMAL_INTERVALS) \
-  X(7, 1024, 768, 16, 15, USB_CAM_LARGE_INTERVALS) \
+  X(7, 1024, 768, 16, 15, HD_RATES) \
   X(8, 1280, 1024, 16, 15, USB_CAM_LARGE_INTERVALS) \
   X(9, 1600, 1200, 16, 15, USB_CAM_LARGE_INTERVALS)
+#define USB_CAM_MODES(X) USB_CAM_COMMON_MODES(X, USB_CAM_NORMAL_INTERVALS, USB_CAM_LARGE_INTERVALS)
+#if USB_CAM_ENABLE_60FPS
+#define USB_CAM_OV3660_BASE(X) USB_CAM_COMMON_MODES(X, USB_CAM_FAST_INTERVALS, USB_CAM_NORMAL_INTERVALS)
+#else
+#define USB_CAM_OV3660_BASE(X) USB_CAM_MODES(X)
+#endif
+#define USB_CAM_OV3660_MODES(X) \
+  USB_CAM_OV3660_BASE(X) \
+  X(10, 1920, 1080, 28, 10, USB_CAM_INTERVAL(10), USB_CAM_INTERVAL(5)) \
+  X(11, 2048, 1536, 32, 5, USB_CAM_INTERVAL(10), USB_CAM_INTERVAL(5))
+#define USB_CAM_OV3660_MODE_COUNT 11
+#define USB_CAM_CAP_SENSOR_PROFILES 1u
+typedef enum {
+  USB_CAM_PROFILE_DISCOVERY, USB_CAM_PROFILE_OV2640,
+  USB_CAM_PROFILE_OV3660_LEGACY, USB_CAM_PROFILE_OV3660
+} UsbCamProfile;
+static inline UsbCamProfile usb_cam_profile_for(uint16_t pid, uint32_t capabilities) {
+  if (pid == 0x26) return USB_CAM_PROFILE_OV2640;
+  if (pid == 0x3660) return capabilities & USB_CAM_CAP_SENSOR_PROFILES ?
+      USB_CAM_PROFILE_OV3660 : USB_CAM_PROFILE_OV3660_LEGACY;
+  return USB_CAM_PROFILE_DISCOVERY;
+}
 typedef struct {
   uint16_t width, height;
   uint8_t quality;
@@ -45,6 +67,7 @@ typedef struct {
 #define USB_CAM_TABLE_ROW(id, w, h, q, fps, ...) \
   {w, h, q, USB_CAM_INTERVAL(fps), sizeof((uint32_t[]){__VA_ARGS__}) / sizeof(uint32_t), {__VA_ARGS__}},
 static const UsbCamMode usb_cam_modes[] = {USB_CAM_MODES(USB_CAM_TABLE_ROW)};
+static const UsbCamMode usb_cam_ov3660_modes[] = {USB_CAM_OV3660_MODES(USB_CAM_TABLE_ROW)};
 #undef USB_CAM_TABLE_ROW
 static inline const UsbCamMode* usb_cam_mode(unsigned index) {
   return index >= 1 && index <= USB_CAM_MODE_COUNT ? &usb_cam_modes[index - 1] : NULL;
@@ -55,3 +78,22 @@ static inline int usb_cam_valid_interval(const UsbCamMode* mode, uint32_t interv
     if (interval == mode->intervals[i]) return 1;
   return 0;
 }
+
+static inline unsigned usb_cam_profile_count(UsbCamProfile profile) {
+  if (profile == USB_CAM_PROFILE_OV3660) return USB_CAM_OV3660_MODE_COUNT;
+  if (profile == USB_CAM_PROFILE_OV2640 || profile == USB_CAM_PROFILE_OV3660_LEGACY) return USB_CAM_MODE_COUNT;
+  return 0;
+}
+static inline const UsbCamMode* usb_cam_profile_mode(UsbCamProfile profile, unsigned index) {
+  if (!index || index > usb_cam_profile_count(profile)) return NULL;
+  return profile == USB_CAM_PROFILE_OV3660 ? &usb_cam_ov3660_modes[index - 1] : usb_cam_mode(index);
+}
+// Pico descriptor state. Change only while TinyUSB is deinitialized.
+#ifdef __cplusplus
+extern "C" {
+#endif
+UsbCamProfile usb_cam_usb_profile(void);
+void usb_cam_usb_select_profile(UsbCamProfile profile);
+#ifdef __cplusplus
+}
+#endif

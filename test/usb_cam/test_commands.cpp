@@ -26,5 +26,16 @@ int main() {
   for (char ch : {'s','t','a','t','u','s'}) assert(!lines.push(ch));
   assert(lines.push('\n') && !lines.overflowed());
   assert(apply_command(lines.line(), c) == CommandResult::Status);
+  c = Config{};
+  assert(apply_command("set pll_multiplier 30", c) == CommandResult::Changed);
+  assert(c.pll.multiplier == 30);
+  auto before = c;
+  assert(apply_command("set pll_multiplier 15", c) == CommandResult::Invalid);
+  assert(config_equal(c, before));
+  assert(apply_command("set pclk_div 31", c) == CommandResult::Changed);
+  assert(apply_command("set pclk_div 2", c) == CommandResult::Invalid);
+  assert(apply_command("set pll_pre_div 4", c) == CommandResult::Invalid);
+  assert(apply_command("set pll_multiplier 0", c) == CommandResult::Changed);
+  assert(!c.pll.multiplier);
   puts("Command tests passed: limits, atomic validation and overflow recovery.");
 }

@@ -25,7 +25,9 @@ bool CameraControl::initialize(const usb_cam::Config& desired) {
   config.pin_pwdn = PWDN_GPIO_NUM; config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = desired.xclk_mhz * 1000000;
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_UXGA; // Reserve buffers for every supported mode.
+  // The SDK clamps QXGA to the detected sensor maximum (UXGA on OV2640)
+  // before cam_config allocates buffers. Keep that allocation across switches.
+  config.frame_size = FRAMESIZE_QXGA;
   config.jpeg_quality = desired.quality;
   config.fb_count = 2; config.fb_location = CAMERA_FB_IN_PSRAM;
   config.grab_mode = CAMERA_GRAB_LATEST;
@@ -54,6 +56,8 @@ void CameraControl::configure(const usb_cam::Config& desired) {
   if (!sensor || (sensor_pid_ != OV2640_PID && sensor_pid_ != OV3660_PID)) {
     fail(usb_cam::kConfigSensor); return;
   }
+  const uint32_t validation = usb_cam::validate_sensor_target(sensor, desired);
+  if (validation) { fail(validation); return; }
   const bool clock_changed = !clock_known_ || xclk_mhz_ != desired.xclk_mhz;
   if (clock_changed) {
     // set_xclk updates its cache even on failure; track success independently.
@@ -76,7 +80,7 @@ void CameraControl::configure(const usb_cam::Config& desired) {
   }
   const bool full = fresh || !configured_ || reset;
   usb_cam::SensorUpdate update;
-  update.geometry = full || clock_changed || programmed_.width != desired.width ||
+  update.geometry = full || clock_changed || !usb_cam::pll_equal(programmed_.pll, desired.pll) || programmed_.width != desired.width ||
                     programmed_.height != desired.height;
   update.quality = update.geometry || programmed_.quality != desired.quality ||
                    programmed_.max_jpeg != desired.max_jpeg;
@@ -136,5 +140,6 @@ void CameraControl::describe(usb_cam::Header& h) const {
   h.generation = session_.applied_generation(); h.config_token = session_.applied_token();
   h.attempted_generation = c.generation; h.attempted_token = usb_cam::config_token(c);
   h.config_error = session_.error(); h.quality = quality_; h.sensor_pid = sensor_pid_;
+  h.capabilities = usb_cam::kSensorProfilesCapability;
   h.camera_starts = camera_starts_; h.sensor_resets = sensor_resets_; h.xclk_hz = xclk_hz_;
 }

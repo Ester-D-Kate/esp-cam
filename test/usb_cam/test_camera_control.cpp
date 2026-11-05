@@ -13,6 +13,12 @@ static bool bank_select_ok = true;
 static int hardware_bank = 1, cached_bank = 1;
 static unsigned starts = 0, stops = 0, returns = 0, resets = 0, writes = 0, clocks = 0;
 static int actual_brightness = 0, actual_clock = 20;
+static int actual_pll = 0;
+static bool pll_ok = true;
+static int pll(sensor_t*, int, int multiplier, int, int, int, int, int, int) {
+  actual_pll = multiplier;
+  return pll_ok ? 0 : -1;
+}
 static sensor_t sensor;
 static camera_fb_t frame;
 static std::vector<uint8_t> jpeg;
@@ -53,7 +59,7 @@ static int xclk(sensor_t* s, int timer, int mhz) {
   actual_clock = mhz; return 0;
 }
 static int size(sensor_t*, framesize_t value) {
-  ++writes;
+  ++writes; actual_pll = 0;
   if (value != FRAMESIZE_VGA && value != FRAMESIZE_SVGA && value != FRAMESIZE_UXGA) return -1;
   const unsigned w = value == FRAMESIZE_UXGA ? 1600 : value == FRAMESIZE_VGA ? 640 : 800;
   const unsigned h = value == FRAMESIZE_UXGA ? 1200 : value == FRAMESIZE_VGA ? 480 : 600;
@@ -64,7 +70,7 @@ static int size(sensor_t*, framesize_t value) {
   return 0;
 }
 extern "C" esp_err_t esp_camera_init(const camera_config_t* config) {
-  assert(!held && config->frame_size == FRAMESIZE_UXGA && config->fb_count == 2);
+  assert(!held && config->frame_size == FRAMESIZE_QXGA && config->fb_count == 2);
   assert(config->pin_d0 == 5 && config->pin_xclk == 0 && config->pin_sccb_sda == 26);
   ++starts; actual_clock = config->xclk_freq_hz / 1000000;
   return init_ok ? ESP_OK : ESP_FAIL;
@@ -229,5 +235,32 @@ int main() {
   frame.buf = jpeg.data(); frame.len = jpeg.size();
   assert(!startup.capture(status, length) && !held);
   assert(status.oversized == oversized_before + 1);
+  // Reject sensor-incompatible requests before a live clock change.
+  config = Config{}; config.generation = 200; config.xclk_mhz = 24;
+  config.width = 2048; config.height = 1536;
+  const unsigned clocks_before = clocks;
+  startup.configure(config); startup.describe(status);
+  assert(!startup.can_capture() && status.config_error == kConfigGeometry && clocks == clocks_before);
+  // PLL changes and disabling the override must both re-run geometry, with no
+  // camera driver restart; a failed PLL callback must not confirm frames.
+  sensor.id.PID = OV3660_PID; sensor.set_pll = pll;
+  CameraControl ov3660;
+  config = Config{}; config.generation = 300; config.pll.multiplier = 30;
+  ov3660.configure(config); confirm(ov3660, status);
+  assert(actual_pll == 30 && status.capabilities == kSensorProfilesCapability);
+  const unsigned starts_before = starts;
+  config.generation++; config.interval_100ns = USB_CAM_INTERVAL(25);
+  ov3660.configure(config); confirm(ov3660, status, 0);
+  assert(actual_pll == 30);
+  config.generation++; config.pll.multiplier = 0;
+  ov3660.configure(config); confirm(ov3660, status);
+  assert(actual_pll == 0 && starts == starts_before);
+  pll_ok = false; config.generation++; config.pll.multiplier = 30;
+  ov3660.configure(config); ov3660.describe(status);
+  assert(!ov3660.can_capture() && status.config_error == kConfigTiming);
+  assert(status.generation != config.generation);
+  pll_ok = true; config.generation++; config.pll.multiplier = 0;
+  ov3660.configure(config); confirm(ov3660, status);
+  assert(actual_pll == 0 && starts == starts_before);
   puts("Camera lifecycle passed: persistent driver, defaults, frame timeout, clock and recovery.");
 }

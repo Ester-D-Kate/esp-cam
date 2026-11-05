@@ -157,3 +157,45 @@ Record what was physically verified separately from build/test results.
 
 Implementation details such as table layout, exact command field offsets,
 diagnostic names and test harness structure are delegated to the builder.
+
+## Sensor profiles upgrade (2026-11-06)
+
+Kate authorized sensor-specific behavior, automatic detection and a matching USB
+menu. Preserve OV2640's nine modes and driver timing. Detect OV3660 by PID 0x3660;
+only the upgraded ESP capability bit enables its additional 1920x1080 and
+2048x1536 modes. Their candidate requested rates are 5/10 FPS, with 5 FPS default
+for 3 MP. Existing modes retain their requested rates until measurements justify
+a change; the diagnostic build also tries 60 FPS VGA and 30 FPS HD/XGA on OV3660.
+These are unvalidated requests, not promises of delivered performance.
+
+Start with a CDC-only discovery USB device. Once a CRC-valid ESP status identifies
+a supported sensor, detach/deinitialize USB, release owned video memory, choose
+immutable sensor-specific descriptors, and enumerate with a distinct USB PID and
+sensor name. Legacy ESP firmware gets the original nine-mode menu and no extended
+controls. Unknown sensors remain diagnostic-only. Identity changes reset desired
+state to VGA and clear sensor-specific overrides. A transient lack of packets
+does not change descriptors. Sensor swaps require power off.
+
+Extend the existing v2 packets using previously reserved bytes: default commands
+remain byte-identical; the new header advertises capability bit 0. A new Pico
+reads old headers, but the old Pico cannot read extended headers, so install the
+new Pico before the new ESP. Keep 64 KiB frame slots and 8 MHz SPI. Full-resolution
+modes use the entire slot; high-detail 3 MP scenes may still exceed it. Allocate
+ESP camera buffers for QXGA once; the driver clamps allocation to OV2640's maximum.
+
+Expose optional OV3660 PLL controls through Pico CDC, with multiplier 0 meaning
+SDK defaults. Bound register fields and computed VCO (150–500 MHz), SYSCLK
+(<=54 MHz), and PCLK (<=10 MHz). Reject unsupported sensor/configuration before
+any sensor writes. Apply PLL after geometry because the SDK overwrites it there;
+returning to defaults reprograms geometry. Never apply these controls to OV2640.
+This is a tuning facility, not an untested automatic overclock. Keep XCLK 20 MHz
+and SDK timings as defaults until live comparisons show an improvement. Preserve
+these controls across OBS commits. Failed timing writes stop publishing frames
+and remain recoverable via a new Pico request. Arbitrary register writes and
+unverified crop recipes remain excluded.
+
+Validation must cover both sensor menus, old firmware fallback, unknown sensor,
+protocol bounds, PLL order/default restoration, QXGA buffer allocation, and real
+TinyUSB negotiation. Build both ESP targets and all four Pico targets. Independent
+review precedes any ESP upload. Physical performance validation follows the one
+prepared ESP upgrade; host tests cannot establish an FPS improvement.

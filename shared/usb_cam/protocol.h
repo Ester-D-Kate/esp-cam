@@ -22,6 +22,7 @@ struct Header {
   uint8_t control_prefix[16]{};
   uint32_t control_spi_hz = 0;
   uint32_t camera_starts = 0, sensor_resets = 0, xclk_hz = 0;
+  uint32_t capabilities = 0;
 };
 inline void encode_header(const Header& h, uint8_t* out) {
   memset(out, 0, kHeaderSize);
@@ -44,6 +45,7 @@ inline void encode_header(const Header& h, uint8_t* out) {
   put32(out + 100, h.control_spi_hz);
   put32(out + 104, h.camera_starts); put32(out + 108, h.sensor_resets);
   put32(out + 112, h.xclk_hz);
+  put32(out + 116, h.capabilities);
   put32(out + 124, crc32(out, 124));
 }
 inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
@@ -51,7 +53,7 @@ inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
       get16(data + 4) != 2 || get16(data + 6) != kHeaderSize ||
       data[8] > 1 || data[9] > 63 || get32(data + 124) != crc32(data, 124)) return false;
   if (get32(data + 72) > uint32_t(ConfigDecodeError::Values)) return false;
-  for (size_t i = 116; i < 124; ++i) if (data[i]) return false;
+  for (size_t i = 120; i < 124; ++i) if (data[i]) return false;
   Header h;
   h.kind = PacketKind(data[8]); h.quality = data[9]; h.sensor_pid = get16(data + 10);
   h.sequence = get32(data + 12); h.timestamp_us = get32(data + 16);
@@ -69,6 +71,7 @@ inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
   h.control_spi_hz = get32(data + 100);
   h.camera_starts = get32(data + 104); h.sensor_resets = get32(data + 108);
   h.xclk_hz = get32(data + 112);
+  h.capabilities = get32(data + 116);
   if (h.kind == PacketKind::Status) {
     if (h.payload_size || h.payload_crc) return false;
   } else if (h.config_error || h.payload_size < 4 || h.payload_size > kMaxJpeg ||

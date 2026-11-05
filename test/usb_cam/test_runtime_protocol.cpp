@@ -29,7 +29,7 @@ int main() {
   std::array<uint8_t, kHeaderSize> roundtrip{};
   encode_header(decoded, roundtrip.data());
   assert(roundtrip == bytes);
-  bytes[116] = 1; // The remaining reserved area is still protected.
+  bytes[120] = 1; // The remaining reserved area is still protected.
   put32(bytes.data() + 124, crc32(bytes.data(), 124));
   assert(!decode_header(bytes.data(), bytes.size(), decoded));
   Config config;
@@ -62,5 +62,9 @@ int main() {
     assert(!decode_header(bytes.data(), bytes.size(), decoded));
     bytes[i] ^= 1;
   }
+  status.capabilities = kSensorProfilesCapability;
+  encode_header(status, bytes.data());
+  assert(decode_header(bytes.data(), bytes.size(), decoded));
+  assert(decoded.capabilities == kSensorProfilesCapability);
   puts("Runtime protocol tests passed: status, errors and mode/configuration fencing.");
 }

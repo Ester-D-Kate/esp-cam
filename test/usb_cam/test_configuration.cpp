@@ -55,6 +55,10 @@ int main() {
   assert(valid_config(config));
   assert(config_token(config) != token); // Same generation after a Pico reset.
   config.width = 1920; config.height = 1080;
+  assert(valid_config(config));
+  config.width = 2048; config.height = 1536;
+  assert(valid_config(config));
+  config.width = 2560; config.height = 1920;
   assert(!valid_config(config));
   config = Config{};
   config.interval_100ns = 0;
@@ -94,5 +98,26 @@ int main() {
     }
   }
   assert(!usb_cam_mode(0) && !usb_cam_mode(USB_CAM_MODE_COUNT + 1));
+  config = Config{};
+  encode_config(config, bytes.data());
+  for (size_t i = 76; i < 124; ++i) assert(bytes[i] == 0); // Legacy token unchanged.
+  // Optional PLL extension: multiplier, sys divider, pre divider, root 2x,
+  // seld5 and manual PCLK divider. 20 MHz -> VCO 200 / SYS 50 / PCLK 10 MHz.
+  bytes[76] = 30; bytes[77] = 1; bytes[78] = 3; bytes[81] = 10;
+  put32(bytes.data() + 124, crc32(bytes.data(), 124));
+  assert(decode_config(bytes.data(), bytes.size(), decoded));
+  bytes[76] = 15; // VCO 100 MHz is outside the datasheet operating range.
+  put32(bytes.data() + 124, crc32(bytes.data(), 124));
+  assert(!decode_config(bytes.data(), bytes.size(), decoded));
+  assert(usb_cam_profile_for(0, 0) == USB_CAM_PROFILE_DISCOVERY);
+  assert(usb_cam_profile_for(0x26, 0) == USB_CAM_PROFILE_OV2640);
+  assert(usb_cam_profile_for(0x3660, 0) == USB_CAM_PROFILE_OV3660_LEGACY);
+  assert(usb_cam_profile_for(0x3660, kSensorProfilesCapability) == USB_CAM_PROFILE_OV3660);
+  assert(usb_cam_profile_for(0x5640, kSensorProfilesCapability) == USB_CAM_PROFILE_DISCOVERY);
+  assert(!usb_cam_profile_mode(USB_CAM_PROFILE_DISCOVERY, 1));
+  assert(!usb_cam_profile_mode(USB_CAM_PROFILE_OV2640, 10));
+  config = mode_config(11, USB_CAM_INTERVAL(5), USB_CAM_PROFILE_OV3660);
+  assert(valid_config(config) && config.width == 2048 && config.height == 1536 && config.max_jpeg == 65536);
+  assert(!valid_config(mode_config(11, USB_CAM_INTERVAL(5), USB_CAM_PROFILE_OV3660_LEGACY)));
   puts("Configuration tests passed: CRC, bounds, settings, reset tokens and all modes.");
 }

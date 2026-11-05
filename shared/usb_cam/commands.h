@@ -37,6 +37,15 @@ inline CommandResult apply_command(const char* line, Config& current) {
     } else if (named("xclk_mhz")) {
       if (use_default || !supported_xclk(int(value))) return CommandResult::Invalid;
       next.xclk_mhz = uint8_t(value);
+    } else if (named("pll_multiplier") || named("pll_sys_div") || named("pll_pre_div") ||
+               named("pll_root_2x") || named("pll_seld5") || named("pclk_div")) {
+      if (use_default || value < 0 || value > 31) return CommandResult::Invalid;
+      if (named("pll_multiplier")) next.pll.multiplier = uint8_t(value);
+      else if (named("pll_sys_div")) next.pll.sys_div = uint8_t(value);
+      else if (named("pll_pre_div")) next.pll.pre_div = uint8_t(value);
+      else if (named("pll_root_2x")) next.pll.root_2x = uint8_t(value);
+      else if (named("pll_seld5")) next.pll.seld5 = uint8_t(value);
+      else next.pll.pclk_div = uint8_t(value);
     } else {
       bool found = false;
       for (unsigned i = 0; i < kSettingCount; ++i) {
