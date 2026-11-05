@@ -120,6 +120,17 @@ PlatformIO; no dependency upgrade.
   Both uploads are verified; reassembly and live configuration/video testing
   are still pending. Future physical instructions must account for this seated
   programmer: remove the whole ESP board rather than assuming loose UART wires.
+- After Kate reassembled/reset the boards, the updated ESP reported
+  `control_error=2`, zero receive prefix/stored CRC, calculated CRC 366415372
+  (124 zero bytes), at 1 MHz. Forward status remained valid, sensor PID zero.
+  Kate confirmed the SD socket is empty. A temporary Pico-only test overrode
+  GP7 output and output-enable during selected transactions in normal/high/low
+  windows. GP7 readback was 1 for forced high and 0 for forced low; ESP received
+  zeros in both windows. Log: `.pio/usb-cam-research/return-level-probe-live.log`.
+  This separates the symptom from ordinary SPI edge timing but does not identify
+  whether the fault is the wire/connector or the ESP input path. All temporary
+  probe source was removed and the normal Pico image re-uploaded with verified
+  flash. Next physical check: substitute a known-good GP7-to-IO2 connection.
 
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here

@@ -214,7 +214,12 @@ experiment did not establish a fix, and those experiments were removed.
 The diagnostic update at `d776503` was uploaded to both boards. The additional
 ESP32 upload on 2026-11-05 completed with flash hash verification through
 `/dev/cu.usbserial-140`. It includes ESP receive diagnostics and the slower
-control exchange; bench validation awaits reassembly after programming.
+control exchange. After reassembly, ESP diagnostics reported an all-zero return
+prefix and CRC at 1 MHz (`control_error=2`). Kate confirmed no SD card is inserted.
+A temporary Pico test forced GP7 high and low while CS was active: Pico read
+back high correctly, while ESP still received zeros in both cases. The temporary
+test was removed and normal Pico firmware restored. Check return-wire continuity,
+connector/pin identification and the ESP input path before further video testing.
 The previous 25 FPS VGA result belongs to the checkpoint, not every new resolution.
 
 Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
