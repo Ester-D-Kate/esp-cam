@@ -255,6 +255,19 @@ PlatformIO; no dependency upgrade.
   Next physical check: ESP IO15->Pico GP1 chip select and ESP IO3->GP3 READY,
   with ESP removed from programmer and power off during wiring inspection.
 
+- After Kate checked/reseated IO15->GP1 and IO3->GP3 and reset both boards, the
+  same zero-byte/no-header condition persisted. Added a passive Pico-only
+  `spi_gpio` diagnostic (GPIO input snapshot mask0x8f); all four Pico builds
+  passed and `zero_camera_uart` was uploaded with verified flash. ESP firmware
+  is unchanged. Six consecutive reports show GP0=1, GP1=0, GP2=0, GP3=0, GP7=0,
+  with rx_bytes0, status_packets0 and a single receive timeout. This is consistent
+  with chip select held low, preventing the receiver from rearming. It does not
+  establish the exact misconnection or electrical fault. Logs:
+  `ov2640-reseated-2026-11-06.log`, `reconnect-pin-level-build.log`,
+  `reconnect-pin-level-upload.log`, `reconnect-pin-level-live.log` under the
+  existing research directory. Next physical check: remake/trace all three SPI
+  wires, IO13->GP0, IO15->GP1, IO14->GP2, retaining READY/return/common ground.
+
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here
 on the existing feature branch, as explicitly requested and approved.

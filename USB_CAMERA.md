@@ -178,6 +178,10 @@ One JSON report per second includes:
 - `sensor_pid`: actual detected sensor (38/0x26 is OV2640, 13920/0x3660 is OV3660).
 - `invalid`, `spi_timeouts`, `header_errors`, `length_errors`, `payload_errors`,
   `overflows`, `rx_bytes`, `rx_prefix`: transport integrity and packet diagnostics.
+- `spi_gpio`: passive Pico input-level snapshot, retaining bits 0/1/2/3/7 for
+  GP0 data, GP1 chip select, GP2 clock, GP3 READY and GP7 return data. It changes
+  no pin settings and is not a logic-analyzer trace. A stalled receiver with
+  GP1 continuously low waits for chip select to return high before rearming.
 - `capture_errors`, `oversized`, `command_errors`, `link_timeouts`, `quality`:
   latest ESP counters and current compression, including status-only replies.
 - `camera_starts`, `sensor_resets`, `xclk_hz`: full driver initialization attempts,
