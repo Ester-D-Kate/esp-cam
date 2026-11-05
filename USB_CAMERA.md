@@ -256,6 +256,43 @@ before reproducing the failure; output is bounded and can be dropped while CDC
 is closed/full. Normal builds leave GP5 unassigned. The diagnostic is uploaded and
 Kate connected the temporary log wire; it captured the errors described above.
 
+### OV2640 hardware recheck — 2026-11-06
+
+Tested the connected OV2640 (PID 0x26) using the existing ESP `d776503` and Pico
+`4735f12` firmware at requested XCLK 20 MHz. No firmware was changed for this
+check. All nine USB modes decoded successfully in eight-second captures:
+
+| Resolution | Requested FPS | Approximate steady USB FPS |
+|---|---:|---:|
+| 160x120 | 60 | 50 |
+| 320x240 | 60 | 50 |
+| 480x320 | 30 | 25 |
+| 640x480 | 30 | 25 |
+| 800x600 | 30 | 25 |
+| 1024x768 | 15 | 12.5 |
+| 1280x720 | 15 | 12.5 |
+| 1280x1024 | 15 | 12.5 |
+| 1600x1200 | 15 | 12.5 |
+
+Nineteen further mode switches, each with a five-second decode, all passed.
+The initialization failure did not recur in this run: no configuration retries,
+invalid SPI packets or new capture errors. The cumulative capture-error counter
+was already 14 before testing and remained 14. This does not establish that the
+previously observed intermittent restart failure is fixed.
+
+Oversized JPEGs were discarded while compression adapted during mode changes
+(112 in total across this check). UXGA reached quality parameter 50, the strongest
+compression allowed by this firmware. Subsequent 30-second UXGA and VGA decodes
+produced 372 and 736 frames respectively; their active-stream diagnostic samples
+showed no further oversized discards, capture errors or invalid packets. These
+are short decode checks in the current scene, not a moving-scene image-quality,
+long-duration stability, end-to-end latency or zero-drop certification.
+
+Finished at VGA, quality parameter 16, desired/applied generation 30. Logs under
+`.pio/usb-cam-research/`: `ov2640-verification-2026-11-06.log`,
+`ov2640-switching-2026-11-06.log`, `ov2640-steady-2026-11-06.log`.
+Only diagnostics were saved; decoded video was discarded.
+
 Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
 change a sensor setting and restore defaults, reboot either board, close/reopen
 applications and run a 30-minute moving-scene soak. Measure actual frames and

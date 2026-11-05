@@ -214,6 +214,23 @@ PlatformIO; no dependency upgrade.
   ESP binary SHA256: `ccda58cf175620208d33123cd4c9aa8f3b495223f146803f161e0bcf4dc8af31`.
   Pico UF2 SHA256: `43ab778b148428a4e8de0d280a9b79a15875116649f83065c80f1e85d4687f61`.
 
+- 2026-11-06, Kate requested testing the current OV2640 before considering
+  OV3660. No firmware changes: ESP remains `d776503`, Pico `4735f12`. All nine
+  eight-second decodes passed (1774 frames total), then 19 additional five-second
+  mode changes passed (2340 frames total). Small 160x120/320x240 modes requested60
+  delivered about50FPS; HVGA/VGA/SVGA about25; larger modes about12.5. No retries,
+  invalid SPI packets or new capture errors; historical capture_errors14 stayed
+  constant. The old initialization failure did not reproduce in this run.
+- Follow-up 30-second UXGA and VGA decodes passed with372 and736 frames. UXGA
+  needed quality50 and discarded oversize frames during adaptation. Across all
+  these runs oversized rose0->112, then stayed112 throughout both sustained
+  decode windows. VGA ended at quality16, generation30 applied/desired match.
+  Logs: `ov2640-verification-2026-11-06.log`, `ov2640-switching-2026-11-06.log`,
+  `ov2640-steady-2026-11-06.log` under `.pio/usb-cam-research/`. No footage saved.
+  These short tests confirm current mode decoding, not resolution-switching
+  reliability under all conditions or zero drops. The reviewed ESP lifecycle
+  revision remains built but unflashed; its physical programming step is pending.
+
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here
 on the existing feature branch, as explicitly requested and approved.
