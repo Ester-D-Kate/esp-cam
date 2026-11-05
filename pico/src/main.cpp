@@ -7,6 +7,9 @@
 #include "usb_cam/frame_clock.h"
 #include "usb_cam/commands.h"
 #include "usb_cam/config_retry.h"
+#if USB_CAM_ESP_LOG
+#include "hardware/uart.h"
+#endif
 
 extern "C" bool usb_cam_video_owns_buffer(const void* buffer);
 extern "C" bool usb_cam_usb_recovery_required(void);
@@ -27,6 +30,27 @@ bool custom_quality = false;
 bool report_requested = false;
 usb_cam::ConfigRetry config_retry;
 uint32_t config_retries = 0;
+
+void esp_log_poll() {
+#if USB_CAM_ESP_LOG
+  static char line[256];
+  static size_t size = 0;
+  for (unsigned i = 0; i < 64 && uart_is_readable(uart1); ++i) {
+    const char ch = uart_getc(uart1);
+    if (ch == '\n') {
+      if (tud_cdc_connected() && tud_cdc_write_available() >= size + 7) {
+        tud_cdc_write_str("ESP: ");
+        tud_cdc_write(line, size);
+        tud_cdc_write_str("\r\n");
+        tud_cdc_write_flush();
+      }
+      size = 0;
+    } else if (ch != '\r' && size < sizeof(line)) {
+      line[size++] = ch;
+    }
+  }
+#endif
+}
 
 void commands() {
   static usb_cam::LineReader reader;
@@ -165,6 +189,14 @@ extern "C" int tud_video_commit_cb(uint_fast8_t control, uint_fast8_t stream,
 }
 
 int main() {
+#if USB_CAM_ESP_LOG
+  // Optional receive-only diagnostic wire: ESP GPIO1/U0T -> Pico GP5 (UART1 RX).
+  uart_init(uart1, 115200);
+  uart_set_hw_flow(uart1, false, false);
+  uart_set_format(uart1, 8, 1, UART_PARITY_NONE);
+  gpio_set_function(5, GPIO_FUNC_UART);
+  gpio_pull_up(5); // Keep an unplugged diagnostic RX line at UART's idle level.
+#endif
   receiver_init();
   receiver_configure(desired);
   multicore_launch_core1(receiver_run);
@@ -175,6 +207,7 @@ int main() {
   usb_cam::FrameClock frame_clock(desired.interval_100ns / 10);
   for (;;) {
     tud_task();
+    esp_log_poll();
     commands();
     frame_clock.interval(desired.interval_100ns / 10);
     const uint32_t now = time_us_32();

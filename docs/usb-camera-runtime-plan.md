@@ -147,6 +147,16 @@ PlatformIO; no dependency upgrade.
   bounds, old identities, unchanged setting values and microsecond clock wrap.
   Independent review found no blockers. Host suites and all five builds pass;
   automatic recovery and high-rate mode measurements are the next bench checks.
+- Pico recovery commit `5976ace` was uploaded as the candidate fast-rate build.
+  SVGA decoded 123 frames/5 seconds near25FPS and QVGA requested60 decoded249
+  frames/5 seconds near50FPS. Subsequent init failures exhausted the two-retry
+  budget and persisted across several requested modes; do not mark recovery as
+  sufficient or mode switching as complete. Capture errors and oversize counters
+  also rose during reconfiguration. Detailed SDK UART errors are now needed.
+- Prepared optional `zero_camera_uart` Pico environment: read ESP U0T/GPIO1 via
+  GP5 (UART1 RX, 115200) and forward bounded, nonblocking `ESP:` lines on USB CDC.
+  Existing SPI wiring is retained. The temporary extra wire and power/reset are
+  needed to capture/reproduce the startup failure without reflashing ESP32.
 
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here

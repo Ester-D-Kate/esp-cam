@@ -199,28 +199,37 @@ pio run -e usb_camera -e esp32cam
 pio run -d pico -e zero_camera -e pico_camera -e zero_camera_fast
 ```
 
-Builds/tests passed during development on 2026-11-05. The runtime Pico build uses
-about 208 KiB of static RAM; that does not measure runtime stack headroom.
-On 2026-11-05, runtime commit `9087b4b` was uploaded to both controllers. The
-ESP32 upload completed once with flash hash verification; the Pico upload
-verified its flash and restarted as VID/PID CAFE:4050. macOS AVFoundation
-enumerated all nine resolutions and their discrete frame-rate choices.
-After reconnection and reseating GP7-to-ESP2, forward status packets were valid
-but every returned configuration was rejected. A temporary passive Pico PIO
-trace captured 128 correct return bytes at GP7 with no mismatches; this does not
-prove the bytes arriving at ESP32 GPIO2. Faster output edges and a one-bit-offset
-experiment did not establish a fix, and those experiments were removed.
-**Runtime video remains unverified and no frames are currently delivered.**
-The diagnostic update at `d776503` was uploaded to both boards. The additional
-ESP32 upload on 2026-11-05 completed with flash hash verification through
-`/dev/cu.usbserial-140`. It includes ESP receive diagnostics and the slower
-control exchange. After reassembly, ESP diagnostics reported an all-zero return
-prefix and CRC at 1 MHz (`control_error=2`). Kate confirmed no SD card is inserted.
-A temporary Pico test forced GP7 high and low while CS was active: Pico read
-back high correctly, while ESP still received zeros in both cases. The temporary
-test was removed and normal Pico firmware restored. Check return-wire continuity,
-connector/pin identification and the ESP input path before further video testing.
-The previous 25 FPS VGA result belongs to the checkpoint, not every new resolution.
+Builds/tests passed during development on 2026-11-05. Pico uses about 208 KiB of
+static RAM; that does not measure runtime stack headroom. The ESP runs diagnostic
+commit `d776503`, uploaded with verified flash. Moving the return wire from GP6
+to the intended GP7 resolved configuration reception: CRCs/tokens match and the
+OV2640 sensor is detected. The SD socket is empty. The detailed investigation and
+upload records are in the implementation plan.
+
+Short macOS USB decode measurements with XCLK 20 MHz:
+
+| Resolution | Requested rate | Approximate measured steady USB FPS |
+|---|---:|---:|
+| 160x120 | 30 | 30 |
+| 320x240 | 60 (experimental menu) | 50 |
+| 480x320, 640x480, 800x600 | 30 | 25 |
+| 1024x768, 1280x720, 1280x1024, 1600x1200 | 15 | 12.5 |
+
+**All nine sizes have decoded individually, but repeated mode switching is not
+yet reliable.** Sensor initialization sometimes fails with error 2. Pico commit
+`5976ace` adds two bounded retries after a fresh, matching error and 250 ms pause;
+`config_retries` counts retries and `config_retry_attempts` shows the current
+request's used budget. Manual generation-only retries recovered ten VGA trials,
+but repeated multi-mode changes later exhausted the budget and stopped capture.
+The underlying SDK startup failure remains unresolved; these short measurements
+are not a stability or zero-drop guarantee.
+
+The optional `zero_camera_uart` diagnostic build reads ESP **U0T/GPIO1 -> Pico
+GP5** at 115200 baud and forwards `ESP:` lines over USB CDC. Connect with power
+off and retain the existing common ground and SPI wires. Open the serial monitor
+before reproducing the failure; output is bounded and can be dropped while CDC
+is closed/full. Normal builds leave GP5 unassigned. This diagnostic is prepared
+and uploaded while the temporary log wire is pending.
 
 Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
 change a sensor setting and restore defaults, reboot either board, close/reopen
