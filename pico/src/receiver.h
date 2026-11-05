@@ -10,6 +10,8 @@ struct ReceivedFrame {
 };
 
 struct ReceiverStats {
+  usb_cam::Header sender;
+  uint32_t status_packets = 0;
   uint32_t frames = 0;
   uint32_t invalid = 0;
   uint32_t header_errors = 0;
@@ -32,3 +34,4 @@ void receiver_run();  // Core 1 only; never returns.
 ReceivedFrame* receiver_take_latest();
 void receiver_release(ReceivedFrame* frame);
 ReceiverStats receiver_stats();
+void receiver_configure(const usb_cam::Config& config);

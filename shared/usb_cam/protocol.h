@@ -1,88 +1,69 @@
 #pragma once
-
-#include <cstddef>
-#include <cstdint>
-#include "profile.h"
+#include "configuration.h"
 
 namespace usb_cam {
-constexpr size_t kHeaderSize = 48;
-constexpr size_t kPacketCapacity = kHeaderSize + kProfile.max_jpeg;
+constexpr size_t kHeaderSize = kControlSize;
+constexpr size_t kPacketCapacity = kHeaderSize + kMaxJpeg;
 constexpr uint32_t kSpiHz = 8000000;
-
+enum class PacketKind : uint8_t { Status = 0, Frame = 1 };
 struct Header {
-  uint32_t sequence = 0;
-  uint32_t timestamp_us = 0;
-  uint32_t payload_size = 0;
-  uint32_t payload_crc = 0;
-  uint32_t capture_errors = 0;
-  uint32_t oversized = 0;
-  uint32_t link_timeouts = 0;
-  uint8_t quality = kProfile.quality;
+  PacketKind kind = PacketKind::Status;
+  uint32_t sequence = 0, timestamp_us = 0, payload_size = 0, payload_crc = 0;
+  uint32_t capture_errors = 0, oversized = 0, link_timeouts = 0;
+  uint8_t quality = 16;
+  uint16_t width = 640, height = 480, sensor_pid = 0;
+  uint32_t interval_100ns = USB_CAM_INTERVAL(30);
+  uint32_t generation = 0, config_token = 0;
+  uint32_t attempted_generation = 0, attempted_token = 0;
+  uint32_t config_error = 0, command_errors = 0;
 };
-
-inline uint32_t crc32(const uint8_t* data, size_t length) {
-  // Reflected IEEE CRC32; a nibble table is fast on both MCUs and uses 64 bytes.
-  static constexpr uint32_t table[16] = {
-      0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
-      0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
-      0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
-      0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c};
-  uint32_t crc = 0xffffffff;
-  for (size_t i = 0; i < length; ++i) {
-    crc ^= data[i];
-    crc = (crc >> 4) ^ table[crc & 15];
-    crc = (crc >> 4) ^ table[crc & 15];
-  }
-  return ~crc;
+inline void encode_header(const Header& h, uint8_t* out) {
+  memset(out, 0, kHeaderSize);
+  put32(out, 0x32564f50); // POV2
+  put16(out + 4, 2); put16(out + 6, kHeaderSize);
+  out[8] = uint8_t(h.kind); out[9] = h.quality;
+  put16(out + 10, h.sensor_pid);
+  put32(out + 12, h.sequence); put32(out + 16, h.timestamp_us);
+  put32(out + 20, h.payload_size); put32(out + 24, h.payload_crc);
+  put32(out + 28, h.capture_errors); put32(out + 32, h.oversized);
+  put32(out + 36, h.link_timeouts);
+  put16(out + 40, h.width); put16(out + 42, h.height);
+  put32(out + 44, h.interval_100ns); put32(out + 48, h.generation);
+  put32(out + 52, h.config_token); put32(out + 56, h.attempted_generation);
+  put32(out + 60, h.attempted_token); put32(out + 64, h.config_error);
+  put32(out + 68, h.command_errors);
+  put32(out + 124, crc32(out, 124));
 }
-
-inline void put32(uint8_t* data, uint32_t value) {
-  for (unsigned i = 0; i < 4; ++i) data[i] = uint8_t(value >> (8 * i));
-}
-inline uint32_t get32(const uint8_t* data) {
-  return uint32_t(data[0]) | (uint32_t(data[1]) << 8) |
-         (uint32_t(data[2]) << 16) | (uint32_t(data[3]) << 24);
-}
-inline uint16_t big16(const uint8_t* data) {
-  return uint16_t((uint16_t(data[0]) << 8) | data[1]);
-}
-
-inline void encode_header(const Header& header, uint8_t* out) {
-  out[0] = 'P'; out[1] = 'O'; out[2] = 'V'; out[3] = '1';
-  out[4] = 1; out[5] = 0;
-  out[6] = uint8_t(kHeaderSize); out[7] = 0;
-  put32(out + 8, USB_CAM_PROFILE);
-  put32(out + 12, header.sequence);
-  put32(out + 16, header.timestamp_us);
-  put32(out + 20, header.payload_size);
-  put32(out + 24, header.payload_crc);
-  put32(out + 28, header.capture_errors);
-  put32(out + 32, header.oversized);
-  put32(out + 36, header.link_timeouts);
-  out[40] = header.quality;
-  out[41] = out[42] = out[43] = 0;
-  put32(out + 44, crc32(out, 44));
-}
-
 inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
-  if (!data || length < kHeaderSize || get32(data) != 0x31564f50 ||
-      data[4] != 1 || data[5] != 0 || data[6] != kHeaderSize || data[7] != 0 ||
-      get32(data + 8) != USB_CAM_PROFILE || data[40] > 63 ||
-      data[41] != 0 || data[42] != 0 || data[43] != 0 ||
-      get32(data + 44) != crc32(data, 44)) return false;
-  const uint32_t payload_size = get32(data + 20);
-  if (payload_size < 4 || payload_size > kProfile.max_jpeg) return false;
-  out.sequence = get32(data + 12);
-  out.timestamp_us = get32(data + 16);
-  out.payload_size = payload_size;
-  out.payload_crc = get32(data + 24);
-  out.capture_errors = get32(data + 28);
-  out.oversized = get32(data + 32);
-  out.link_timeouts = get32(data + 36);
-  out.quality = data[40];
+  if (!data || length < kHeaderSize || get32(data) != 0x32564f50 ||
+      get16(data + 4) != 2 || get16(data + 6) != kHeaderSize ||
+      data[8] > 1 || data[9] > 63 || get32(data + 124) != crc32(data, 124)) return false;
+  for (size_t i = 72; i < 124; ++i) if (data[i]) return false;
+  Header h;
+  h.kind = PacketKind(data[8]); h.quality = data[9]; h.sensor_pid = get16(data + 10);
+  h.sequence = get32(data + 12); h.timestamp_us = get32(data + 16);
+  h.payload_size = get32(data + 20); h.payload_crc = get32(data + 24);
+  h.capture_errors = get32(data + 28); h.oversized = get32(data + 32);
+  h.link_timeouts = get32(data + 36);
+  h.width = get16(data + 40); h.height = get16(data + 42);
+  h.interval_100ns = get32(data + 44); h.generation = get32(data + 48);
+  h.config_token = get32(data + 52); h.attempted_generation = get32(data + 56);
+  h.attempted_token = get32(data + 60); h.config_error = get32(data + 64);
+  h.command_errors = get32(data + 68);
+  if (h.kind == PacketKind::Status) {
+    if (h.payload_size || h.payload_crc) return false;
+  } else if (h.config_error || h.payload_size < 4 || h.payload_size > kMaxJpeg ||
+             !supported_geometry(h.width, h.height) ||
+             h.interval_100ns < USB_CAM_INTERVAL(60) || h.interval_100ns > 10000000) return false;
+  out = h;
   return true;
 }
-
+inline bool matches_config(const Header& h, const Config& c) {
+  return h.kind == PacketKind::Frame && !h.config_error &&
+      h.generation == c.generation && h.config_token == config_token(c) &&
+      h.width == c.width && h.height == c.height && h.interval_100ns == c.interval_100ns &&
+      h.payload_size >= 4 && h.payload_size <= c.max_jpeg;
+}
 inline bool validate_jpeg(const uint8_t* data, size_t& length,
                           uint16_t width, uint16_t height) {
   if (!data || length < 4 || data[0] != 0xff || data[1] != 0xd8) return false;
@@ -117,10 +98,10 @@ inline bool validate_jpeg(const uint8_t* data, size_t& length,
   return false;
 }
 
-inline bool validate_payload(const Header& header, const uint8_t* data, size_t length) {
-  if (length != header.payload_size || length > kProfile.max_jpeg ||
-      crc32(data, length) != header.payload_crc) return false;
+inline bool validate_payload(const Header& h, const uint8_t* data, size_t length) {
+  if (h.kind != PacketKind::Frame || !data || length != h.payload_size || length > kMaxJpeg ||
+      crc32(data, length) != h.payload_crc) return false;
   size_t jpeg_length = length;
-  return validate_jpeg(data, jpeg_length, kProfile.width, kProfile.height) && jpeg_length == length;
+  return validate_jpeg(data, jpeg_length, h.width, h.height) && jpeg_length == length;
 }
-}  // namespace usb_cam
+} // namespace usb_cam

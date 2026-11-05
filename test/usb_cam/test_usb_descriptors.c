@@ -1,7 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include "tusb.h"
-#include "usb_cam/profile.h"
+#include "usb_cam/modes.h"
 
 static unsigned le16(const uint8_t* p) { return p[0] | (unsigned)p[1] << 8; }
 static uint32_t le32(const uint8_t* p) {
@@ -13,7 +13,7 @@ int main(void) {
   assert(config && config[0] == 9 && config[1] == TUSB_DESC_CONFIGURATION);
   assert(!tud_descriptor_configuration_cb(1));
   const size_t length = le16(config + 2);
-  assert(length > 9 && length < 512 && config[4] == 4);
+  assert(length > 9 && length < 1024 && config[4] == 4);
   unsigned interfaces = 0;
   unsigned video_frames = 0;
   unsigned video_endpoints = 0;
@@ -34,23 +34,31 @@ int main(void) {
     } else if (d[1] == TUSB_DESC_CS_INTERFACE && interface_class == TUSB_CLASS_VIDEO &&
                interface_subclass == VIDEO_SUBCLASS_STREAMING && d[2] == VIDEO_CS_ITF_VS_FRAME_MJPEG) {
       ++video_frames;
-      assert(d[0] == 38 && d[3] == 1);
-      assert(le16(d + 5) == USB_CAM_WIDTH && le16(d + 7) == USB_CAM_HEIGHT);
-      assert(le32(d + 17) == USB_CAM_MAX_JPEG);
-      assert(le32(d + 21) == USB_CAM_INTERVAL_100NS);
-      assert(d[25] == 0 && le32(d + 26) == le32(d + 30));
+      static const unsigned sizes[][2] = {{640,480},{800,600},{1280,720},{320,240},
+          {160,120},{480,320},{1024,768},{1280,1024},{1600,1200}};
+      assert(d[3] == video_frames && video_frames <= 9);
+      assert(le16(d + 5) == sizes[video_frames - 1][0]);
+      assert(le16(d + 7) == sizes[video_frames - 1][1]);
+      assert(le32(d + 17) == 65536);
+      assert(d[25] >= 3 && d[0] == 26 + d[25] * 4);
+      uint32_t previous = 0;
+      for (unsigned n = 0; n < d[25]; ++n) {
+        const uint32_t interval = le32(d + 26 + 4 * n);
+        assert(interval > previous && interval >= 166666 && interval <= 2000000);
+        previous = interval;
+      }
+      assert(usb_cam_valid_interval(usb_cam_mode(d[3]), le32(d + 21)));
     } else if (d[1] == TUSB_DESC_ENDPOINT && d[2] == 0x81) {
       ++video_endpoints;
       assert((d[3] & 3) == TUSB_XFER_BULK && le16(d + 4) == 64 && d[6] == 0);
     }
     offset += d[0];
   }
-  assert(offset == length && interfaces == 4 && video_frames == 1 && video_endpoints == 1);
+  assert(offset == length && interfaces == 4 && video_frames == 9 && video_endpoints == 1);
   for (unsigned i = 0; i <= 5; ++i) {
     const uint16_t* string = tud_descriptor_string_cb(i, 0x0409);
     assert(string && (string[0] >> 8) == TUSB_DESC_STRING && (string[0] & 255) <= 128);
   }
   assert(!tud_descriptor_string_cb(6, 0x0409));
-  printf("USB descriptor tests passed for profile %u (%ux%u at %u target FPS).\n",
-         USB_CAM_PROFILE, USB_CAM_WIDTH, USB_CAM_HEIGHT, USB_CAM_FPS);
+  puts("USB descriptor tests passed: nine modes, discrete intervals, bulk and strings.");
 }

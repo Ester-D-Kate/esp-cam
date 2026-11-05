@@ -14,12 +14,14 @@ constexpr uint kDataPin = 0;
 constexpr uint kSelectPin = 1;
 constexpr uint kClockPin = 2;
 constexpr uint kReadyPin = 3;
+constexpr uint kReturnPin = 7; // SPI0 TX; GP3 remains the separate READY signal.
 constexpr uint32_t kTransactionTimeoutUs = 250000;
 constexpr size_t kDmaCapacity = usb_cam::kPacketCapacity + 1;
 ReceivedFrame frames[usb_cam::FrameSlots::kCount];
 usb_cam::FrameSlots slots;
 critical_section_t mutex;
 ReceiverStats stats;
+usb_cam::Config desired;
 
 class Lock {
  public:
@@ -33,7 +35,7 @@ void clear_spi() {
   spi_init(kSpi, usb_cam::kSpiHz);
   spi_set_format(kSpi, 8, SPI_CPOL_0, SPI_CPHA_1, SPI_MSB_FIRST);
   spi_set_slave(kSpi, true);
-  spi_get_hw(kSpi)->dmacr = SPI_SSPDMACR_RXDMAE_BITS;
+  spi_get_hw(kSpi)->dmacr = SPI_SSPDMACR_RXDMAE_BITS | SPI_SSPDMACR_TXDMAE_BITS;
 }
 
 int reserve() {
@@ -56,13 +58,20 @@ void validate(int slot) {
   const bool header_valid = usb_cam::decode_header(frame.packet, frame.length, frame.header);
   const bool length_valid = header_valid && frame.length == usb_cam::kHeaderSize + frame.header.payload_size;
   const bool valid = length_valid &&
-      usb_cam::validate_payload(frame.header, frame.packet + usb_cam::kHeaderSize, frame.header.payload_size);
+      (frame.header.kind == usb_cam::PacketKind::Status ||
+       usb_cam::validate_payload(frame.header, frame.packet + usb_cam::kHeaderSize, frame.header.payload_size));
   Lock lock;
   if (!valid) {
     ++stats.invalid;
     if (!header_valid) ++stats.header_errors;
     else if (!length_valid) ++stats.length_errors;
     else ++stats.payload_errors;
+    slots.release(slot);
+    return;
+  }
+  stats.sender = frame.header;
+  if (frame.header.kind == usb_cam::PacketKind::Status) {
+    ++stats.status_packets;
     slots.release(slot);
     return;
   }
@@ -87,6 +96,7 @@ void receiver_run() {
   gpio_set_function(kDataPin, GPIO_FUNC_SPI);
   gpio_set_function(kSelectPin, GPIO_FUNC_SPI);
   gpio_set_function(kClockPin, GPIO_FUNC_SPI);
+  gpio_set_function(kReturnPin, GPIO_FUNC_SPI);
   gpio_pull_up(kSelectPin);
   gpio_pull_down(kClockPin);
   const uint32_t peripheral_hz = clock_get_hz(clk_peri);
@@ -99,6 +109,13 @@ void receiver_run() {
     for (;;) tight_loop_contents();  // READY remains low; CDC reports the clock.
   }
   const int dma = dma_claim_unused_channel(true);
+  const int tx_dma = dma_claim_unused_channel(true);
+  dma_channel_config tx_config = dma_channel_get_default_config(tx_dma);
+  channel_config_set_transfer_data_size(&tx_config, DMA_SIZE_8);
+  channel_config_set_read_increment(&tx_config, true);
+  channel_config_set_write_increment(&tx_config, false);
+  channel_config_set_dreq(&tx_config, spi_get_dreq(kSpi, true));
+  alignas(4) uint8_t response[usb_cam::kControlSize];
   dma_channel_config config = dma_channel_get_default_config(dma);
   channel_config_set_transfer_data_size(&config, DMA_SIZE_8);
   channel_config_set_read_increment(&config, false);
@@ -110,8 +127,12 @@ void receiver_run() {
     const int slot = reserve();
     if (slot < 0) { sleep_us(10); continue; }
     ReceivedFrame& frame = frames[slot];
+    usb_cam::Config snapshot;
+    { Lock lock; snapshot = desired; }
+    usb_cam::encode_config(snapshot, response);
     clear_spi();
     dma_channel_configure(dma, &config, frame.packet, &spi_get_hw(kSpi)->dr, kDmaCapacity, true);
+    dma_channel_configure(tx_dma, &tx_config, &spi_get_hw(kSpi)->dr, response, sizeof(response), true);
     gpio_put(kReadyPin, true);
     // Dedicated core 1 waits for the master; core 0 continues servicing USB.
     while (gpio_get(kSelectPin)) tight_loop_contents();
@@ -122,6 +143,7 @@ void receiver_run() {
     }
     const bool timed_out = !gpio_get(kSelectPin);
     spi_get_hw(kSpi)->dmacr = 0;
+    dma_channel_abort(tx_dma); // Response storage stays owned until pending reads finish.
     // No DMA IRQ is enabled (including RP2040-E13). Abort clears TRANS_COUNT;
     // count bytes using the completed destination address instead.
     size_t count = usb_cam_finish_dma(dma, frame.packet, kDmaCapacity);
@@ -171,3 +193,9 @@ void receiver_release(ReceivedFrame* frame) {
 }
 
 ReceiverStats receiver_stats() { Lock lock; return stats; }
+
+void receiver_configure(const usb_cam::Config& config) {
+  if (!usb_cam::valid_config(config)) return;
+  Lock lock;
+  desired = config;
+}

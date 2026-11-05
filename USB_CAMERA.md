@@ -1,260 +1,212 @@
-# ESP32-CAM + RP2040-Zero USB POV camera
+# ESP32-CAM + RP2040-Zero USB camera
 
-USB-only firmware on branch `codex/usb-cam`. This is a **hardware-test prototype**:
-compilation and host tests cannot establish image quality, reliable enumeration,
-latency or sustained FPS on the physical boards.
+The current firmware exposes one MJPEG USB camera with resolution/FPS selection
+in OBS and other UVC applications. The Pico sends the selected mode and sensor
+settings back to the ESP32 over SPI. Changing resolution or recurring settings
+requires no ESP32 reflash. Both controllers need this protocol-v2 firmware;
+protocol-v1 firmware is deliberately rejected.
 
-The camera sensor supplies JPEGs. ESP32 transmits them over SPI; RP2040 receives
-with DMA on core 1 and runs a standard MJPEG UVC webcam plus a diagnostic serial
-port on core 0. No computer-side video conversion service is required. The host
-sees one composite USB device with video and diagnostics. It is not a USB disk.
+The first working VGA firmware is safely committed at `79d60ee`, tagged
+`usb-cam-first-working`. It delivered approximately 24.9–25.0 FPS on the tested
+Mac and passed three close/reopen captures. See the
+[historical guide](docs/usb-camera-first-working.md) for those exact artifacts
+and measurements. Runtime mode hardware results are recorded below as tested.
 
-This first version prioritizes live video. SD, Wi-Fi, recording button, servos
-and gyro are inactive in the USB build. The previous firmware remains selectable
-as the `esp32cam` environment. The USB firmware leaves GPIO12 unused; it does not
-change or remove the old button/debounce implementation.
+## Wiring
 
-## What output to expect
+GPIO numbers below are board labels, not physical connector positions.
 
-Start with VGA30. Profiles describe **requested/advertised timing, not measured
-FPS**. Lighting, exposure, sensor, JPEG detail, wiring and host scheduling all
-affect actual throughput. Read the counters and measure actual host capture.
-
-| Profile | ESP32 environment | Zero environment | Image | Target FPS | JPEG ceiling |
-|---|---|---|---|---|---|
-| 1: moving POV, default | `usb_vga30` | `zero_vga30` | 640 × 480 | 30 | 24 KiB |
-| 2: more detail | `usb_svga15` | `zero_svga15` | 800 × 600 | 15 | 48 KiB |
-| 3: HD experiment | `usb_hd10` | `zero_hd10` | 1280 × 720 | 10 | 60 KiB |
-| 4: link bring-up/fallback | `usb_qvga30` | `zero_qvga30` | 320 × 240 | 30 | 24 KiB |
-
-**Flash matching profiles on both boards.** A mismatch is rejected and increments
-`invalid`; it does not send wrongly sized images to the host. Each profile has
-a distinct USB product ID to reduce host format-cache confusion.
-
-The RP2040 has full-speed USB (12 Mbit/s, not 480 Mbit/s). Video uses standard
-UVC bulk transfers with 64-byte USB packets and a 2048-byte software staging
-buffer, following GB Interceptor's transport. Bulk scheduling shares bandwidth
-with other USB traffic. The chosen JPEG ceilings consume at most 0.74 MB/s at
-target FPS; they do not prove the camera can produce those rates.
-
-JPEGs are passed through without decoding, resizing or artificial sharpening.
-When a scene produces a JPEG above the ceiling, that frame is counted/discarded
-and compression increases by two quality steps, up to 50. Smaller JPEG quality
-numbers mean better image quality. Compression does not automatically oscillate
-back down; reset to restore the initial quality. HD uses a different aspect ratio
-and may change the sensor's field of view. There is no stabilization, autofocus
-control, audio, or HD/60 FPS capability added by this bridge. For moving POV use,
-good light and a correctly focused lens remain essential.
-
-## Wiring (power off first)
-
-Use GPIO labels, **not physical pin numbers**. Signals are 3.3 V. Keep wires
-short (start below 10 cm) and route ground beside SCK. These pins are available
-on the Waveshare RP2040-Zero; GP8 through GP14 are reserved and unused by this
-firmware. GP16 is its RGB LED and is deliberately unused. The SPI0 functions
-follow the [RP2040 datasheet, GPIO functions table](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf).
-
-| ESP32-CAM AI Thinker | Direction | Waveshare RP2040-Zero | Purpose |
-|---|---|---|---|
-| GPIO14 | → | GP2 | SPI0 SCK |
-| GPIO13 | → | GP0 | SPI0 RX / ESP32 MOSI |
-| GPIO15 | → | GP1 | SPI0 CS, active low |
-| GPIO3 / U0R | ← | GP3 | READY / acknowledge |
-| GND | ↔ | GND | Common signal reference |
-
-There is no MISO wire. SPI is **8 MHz, mode 1, MSB first**. READY goes high only
-after the Pico has armed its receive DMA. ESP32 asserts CS, waits for READY to
-fall, then sends one header and JPEG while CS stays low. CRC, exact byte counts
-and JPEG geometry are checked before a frame becomes eligible for USB.
-
-Remove the microSD card and disconnect servo/gyro wiring: SPI uses GPIO13–15,
-which also connect to the SD socket. GPIO0 must not be grounded during normal
-ESP32 operation. Keep GPIO12 low at boot as required by the board's flash-voltage
-strap; do not add an external pull-up.
-
-For initial testing, power the Zero from the computer's USB data port and power
-the ESP32-CAM through its **5V input** with a stable regulated supply. Connect
-grounds. Do not power ESP32-CAM from the Zero's 3V3 output. Do not join two
-independent 5V outputs or backfeed the computer. A compact single-supply build
-can be designed after measuring current and checking the exact power circuit;
-this configuration advertises 100 mA for the separately powered USB bridge.
-
-**Programming conflict:** GPIO3 is the ESP32 programming UART RX and the READY
-input. Disconnect Pico GP3 ↔ ESP32 GPIO3 while flashing ESP32. During normal operation,
-disconnect the programmer's TX wire from GPIO3, then reconnect READY. Programmer
-RX may remain connected to ESP32 GPIO1 for TX-only logs, with common ground and
-3.3 V UART signaling.
-
-## Build and flash
-
-Open the repository in VS Code/PlatformIO for ESP32. Open the `pico` subfolder as
-a second PlatformIO project for RP2040-Zero. A multi-root VS Code workspace is
-provided as `usb-camera.code-workspace`.
-
-PlatformIO is already installed on this development machine at
-`/Users/kate/.platformio/penv/bin/pio`; substitute that path if `pio` is not on
-PATH. On a fresh machine, `uv tool install platformio==6.2.0` installs the CLI.
-
-From the repository root:
-
-```sh
-pio run -e usb_vga30
-pio run -d pico -e zero_vga30
-```
-
-The Pico project uses a pinned community PlatformIO platform with native Pico
-SDK support, rather than the official platform's Arduino-only setup. GCC 14 is
-pinned to include a native Apple Silicon compiler. Dependencies are downloaded
-on the first build. No installed SDK files are modified by this project.
-
-Flash ESP32 using its USB/UART programmer (READY disconnected, GPIO0 grounded
-only while entering the bootloader):
-
-```sh
-pio run -e usb_vga30 -t upload --upload-port YOUR_ESP32_SERIAL_PORT
-```
-
-Remove GPIO0–GND after flashing and reset. For the RP2040-Zero, hold BOOT while
-connecting USB, or hold BOOT and tap RESET. Then upload:
-
-```sh
-pio run -d pico -e zero_vga30 -t upload
-```
-
-Alternatively, copy `pico/.pio/build/zero_vga30/firmware.uf2` onto the `RPI-RP2`
-bootloader drive. The drive disappears after reboot; the device should then
-enumerate as **ESP32 POV Camera** and a diagnostic serial port. Re-enter BOOTSEL
-to reflash: this custom USB firmware does not implement Arduino's serial-touch
-reset. An ordinary Raspberry Pi Pico can use `pico_vga30` with the same GPIO map.
-
-## First hardware test
-
-1. Flash matching QVGA30 profiles first if wiring is unproven; otherwise start
-   with the default VGA30 pair. Reconnect signal wires with power off.
-2. Connect the Zero's USB to the computer, then power ESP32. Inspect ESP32 logs
-   if the camera fails to start or the Zero reports no received frames.
-3. Open OBS or another UVC application. Select **ESP32 POV Camera** (shown as
-   **MJPEG Video** in macOS AVFoundation/FFmpeg), MJPEG and
-   the dimensions/FPS for the flashed profile. Host/app compatibility still
-   needs testing on your machine; an app that insists on YUY2 is not supported.
-4. Open the Zero's diagnostic serial port at 115200. It emits one JSON line per
-   second. Serial output is nonblocking so a slow monitor cannot stall video.
-5. Test a bright static scene, then fast hand/head movement, then indoor light.
-   Run each for 60 seconds. Record actual USB FPS, source/transport losses and
-   visible blur. Do not infer performance from the application's selected FPS.
-6. Close/reopen the camera app, unplug/replug USB, reset ESP32, and reset Zero.
-   Then perform a 30-minute moving-scene soak. Confirm recovery and no increasing
-   invalid-frame count. No automatic tests in this repo replace these checks.
-
-Diagnostic fields:
-
-| Field | Meaning |
-|---|---|
-| `rx_fps_x10`, `usb_fps_x10` | Measured receive / USB completion rate, multiplied by 10 |
-| `rx_frames`, `usb_frames` | Cumulative valid receives / firmware USB completions |
-| `invalid`, `spi_timeouts` | Corrupt, truncated, mismatched or oversized SPI packets / incomplete transactions |
-| `header_errors`, `length_errors`, `payload_errors`, `overflows` | Invalid-packet breakdown: header, total length, JPEG/CRC, receive-buffer overflow |
-| `rx_bytes`, `rx_prefix` | Last SPI transaction's byte count and first 16 bytes as hexadecimal; a valid header starts `504f56310100300001000000` for profile 1 |
-| `replaced` | Valid preview frames skipped to keep latency bounded, including while no app is reading |
-| `seq_gaps`, `sender_resets` | Missing ESP32 application sequence numbers / inferred sequence restart |
-| `submit_errors`, `cancelled`, `usb_restarts` | USB submission failures, cancelled frames, recovery reconnects |
-| `jpeg_bytes`, `quality` | Last submitted frame size and ESP32 JPEG quality setting |
-| `capture_errors`, `oversized`, `link_timeouts` | Last received ESP32 error counters |
-| `max_queue_us` | Largest receive-to-USB-submit wait; **not** end-to-end camera latency |
-| `clk_peri` | Actual Pico peripheral clock; must be at least 96 MHz for 8 MHz slave SPI |
-
-USB completion means the controller completed sending. Check decoded host frames
-too; controller counters alone do not establish successful display. ESP32 camera
-driver discards before the application gets a frame are not all represented in
-`seq_gaps`; the achieved FPS and visual timestamps are the relevant checks.
-
-For true glass-to-glass latency, film a rapidly changing stopwatch/display and
-the webcam preview in the same reference video. For frame loss, capture a known
-changing frame counter and inspect the host recording. Good FPS alone does not
-prove low latency or clear motion.
-
-## Implementation and research
-
-* Shared profiles, wire protocol and slot ownership: `shared/usb_cam/`.
-* ESP32 capture and SPI sender: `src/usb_cam/`.
-* Pico SPI DMA receiver, UVC driver adapter and diagnostics: `pico/src/`.
-* Design, bandwidth calculations and primary-source links:
-  [docs/usb-camera-design.md](docs/usb-camera-design.md).
-
-Existing projects inspected at source level:
-
-| Source | What informed this implementation | Important difference |
+| ESP32-CAM | RP2040-Zero | Signal |
 |---|---|---|
-| [TinyUSB video_capture](https://github.com/hathach/tinyusb/tree/86ad6e56c1700e85f1c5678607a762cfe3aa2f47/examples/device/video_capture) | UVC descriptors, probe/commit, asynchronous frame transfer | Example video is generated/static; our JPEGs come from a sensor |
-| [GB Interceptor](https://github.com/Staacks/gbinterceptor/tree/164127fe03bcd3b7238259187197dde7a315ec89/firmware) | RP2040 UVC, front/back buffers, completion callback and CDC | Synthetic Game Boy video and specialized JPEG encoding do not demonstrate natural-scene throughput |
-| [ArduCAM PICO_SPI_CAM](https://github.com/ArduCAM/PICO_SPI_CAM/tree/378f3c045122b99625f59ad5fcb1aed057de7e53/C) | Read a whole compressed frame from SPI, then send over USB | Its Pico is SPI master and uses a proprietary CDC host app; we use SPI slave DMA and UVC |
-| [Espressif esp32-camera](https://github.com/espressif/esp32-camera) | Sensor JPEG, PSRAM and continuous double buffering | It does not supply this RP2040 bridge |
+| GPIO14 | GP2 | SPI0 clock |
+| GPIO13 | GP0 | SPI0 RX: ESP camera data to Pico |
+| GPIO15 | GP1 | Active-low SPI chip select |
+| GPIO3 / U0R | GP3 | Pico READY handshake |
+| **GPIO2** | **GP7** | **New SPI0 TX return wire: Pico configuration to ESP** |
+| GND | GND | Shared ground |
 
-No exact validated ESP32-CAM → RP2040-Zero SPI → UVC project was established by
-this research. The bridge protocol is new code and needs the hardware tests
-above. TinyUSB stays at the SDK's pinned 0.18.0 commit. Its internal buffer
-ownership accessor is isolated in `video_driver.c` and compile-time guarded;
-review it when upgrading TinyUSB. `dcd_driver.c` also adapts the upstream RP2040
-ISO endpoint abort sequence to prevent a pending packet surviving stream
-reactivation. Its wait is bounded; unsupported early silicon or an abort timeout
-requests a full USB reconnect. The reset helper is exercised against a host
-register model. See [third-party notices](pico/THIRD_PARTY_NOTICES.md) for the
-upstream source and license. Physical close/reopen testing is still required.
-Bulk endpoint reopening also reuses its existing DPRAM allocation and safely
-aborts pending transfers. The initial isochronous build produced a macOS USB
-pipe error during hardware testing; the current build uses bulk UVC instead.
-The USB VID/PIDs are prototype identifiers
-from the TinyUSB example convention, not an assigned product identity.
+The five signal wires use 3.3 V logic, hardware SPI0 and RX/TX DMA, mode 1 at
+8 MHz. Pico GP8–GP14 remain unused. GP3 is a normal GPIO handshake. Keep wiring
+short. Remove the SD card and disconnect servo/gyro wiring for this USB build.
+USB firmware excludes Wi-Fi and recording; the legacy `esp32cam` environment
+retains the original application and recording-button behavior.
 
-## Local verification
+Power Pico over USB and supply stable 5 V to ESP32. Share GND; do not connect two
+independent 5 V supplies together or power the ESP32 from Pico 3V3.
+
+## Build and upload
+
+Open `usb-camera.code-workspace` in VS Code with PlatformIO. Build:
+
+```sh
+pio run -e usb_camera
+pio run -d pico -e zero_camera
+```
+
+For a full-size Raspberry Pi Pico use `pico_camera` instead of `zero_camera`.
+The native Pico SDK platform, GCC toolchain and TinyUSB remain pinned in the
+PlatformIO files. The older fixed-resolution environments live in the checkpoint.
+
+One planned ESP32 upload installs support for all SDK JPEG geometries through
+1600x1200 and the controls below. Later Pico firmware can adjust its menus,
+requested rates and default settings within this contract.
+
+1. Disconnect Pico READY from ESP GPIO3. Leave the new GP7-to-GPIO2 wire
+   disconnected during flashing: ESP GPIO2 must be low or floating to enter its
+   serial bootloader. Connect the serial programmer, put GPIO0 to GND and reset.
+2. Upload with `pio run -e usb_camera -t upload --upload-port <ESP serial port>`.
+3. Disconnect programmer TX from GPIO3, free GPIO0 from GND, restore READY and
+   connect the new return wire. Reset the ESP32 into normal operation. Programmer
+   RX may remain connected to ESP GPIO1 to read the transmit-only startup log.
+4. Put Pico in BOOTSEL (hold BOOT, tap RESET, release BOOT), then run
+   `pio run -d pico -e zero_camera -t upload`.
+
+Pico UF2 is `pico/.pio/build/zero_camera/firmware.uf2`; ESP binary is
+`.pio/build/usb_camera/firmware.bin`. Use PlatformIO for ESP upload so bootloader,
+partitions and application receive the correct offsets. Pico updates may be
+repeated independently. Bug fixes or new capabilities outside the installed
+ESP contract can still require a future ESP upload.
+
+## OBS resolution and FPS choices
+
+Select **MJPEG Video** / **ESP32 POV Camera** as the video device. Where the host
+application offers it, use custom resolution/FPS rather than a fixed preset.
+Changing a mode briefly pauses capture while the real sensor is reconfigured.
+
+| Resolution | Available requested FPS |
+|---|---|
+| 160x120 | 30, 25, 20, 15, 10, 5 |
+| 320x240 | 30, 25, 20, 15, 10, 5 |
+| 480x320 | 30, 25, 20, 15, 10, 5 |
+| 640x480 (default) | 30, 25, 20, 15, 10, 5 |
+| 800x600 | 30, 25, 20, 15, 10, 5 |
+| 1024x768 | 15, 10, 5 |
+| 1280x720 | 15, 10, 5 |
+| 1280x1024 | 15, 10, 5 |
+| 1600x1200 | 15, 10, 5 |
+
+These rates are requests, not guaranteed measured output. Sensor exposure,
+scene detail, JPEG compression, SPI and full-speed USB constrain delivery.
+The `zero_camera_fast` experiment additionally offers 60 FPS at 160x120 and
+320x240, without changing ESP firmware. Do not treat it as a validated 60 FPS
+camera. The standard build omits that unmeasured option.
+
+JPEG data stays compressed from the sensor to USB. Three fixed 64 KiB buffers
+bound Pico RAM. The selected interval also sets a conservative 720 KiB/s frame
+budget. If a frame exceeds its budget, it is counted and compression increases
+(up to quality value 50). Smaller quality numbers mean better JPEG quality.
+Changing modes resets to that mode's default unless an explicit quality override
+is active. The firmware never upscales or repeats a frame to inflate FPS.
+
+## Pico-controlled settings
+
+Open the Pico's **Camera Diagnostics** CDC serial port at 115200 baud. Enter a
+command followed by a newline. These controls work through the Pico; they do not
+require ESP programming mode. Resolution and FPS are owned by the UVC application.
+
+```text
+status
+set quality 12
+set brightness 1
+set hmirror 1
+set aec 0
+set aec_value 300
+set brightness default
+defaults
+```
+
+`default` clears an individual optional setting. `defaults` restores driver
+settings and the selected mode's JPEG quality, preserving the host's selected
+resolution/FPS. Commands are validated before changing desired state. Settings
+are held in RAM and reset on Pico reboot. Edit the Pico's defaults if persistence
+across power cycles is needed; ESP firmware stays the same.
+
+| Setting | Accepted values |
+|---|---|
+| `quality` | 0–50 (lower is better; actual compression may rise to meet budget) |
+| `xclk_mhz` | 10, 16, 20; default 20, camera restarts to change it |
+| `brightness`, `contrast`, `saturation`, `sharpness`, `ae_level` | -2–2 |
+| `denoise` | 0–8, only if supported by the attached sensor |
+| `hmirror`, `vflip`, `aec`, `aec2`, `agc`, `awb`, `awb_gain` | 0 or 1 |
+| `aec_value` | 0–1200; use manual exposure (`aec=0`) |
+| `agc_gain` | 0–30; use manual gain (`agc=0`) |
+| `gainceiling` | 0–6 |
+| `wb_mode` | 0–4 |
+| `special_effect` | 0–6 |
+| `bpc`, `wpc`, `raw_gma`, `lenc`, `dcw`, `colorbar` | 0 or 1 |
+
+Not every sensor implements every setting. A failed callback pauses images,
+reports `config_error`, and leaves the command link active. Send `defaults` or
+correct the setting to recover. The firmware does not claim partially applied
+settings succeeded. Configuration is confirmed only after a JPEG of the requested
+geometry is received. Controls are based on Espressif's sensor callbacks, as in
+[CameraWebServer](https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Camera/CameraWebServer/app_httpd.cpp).
+They are not exposed in every application's native exposure dialog in this version.
+
+## Diagnostics and verification
+
+One JSON report per second includes:
+
+- `width`, `height`, `target_fps`: host-requested mode; `rx_fps_x10` and
+  `usb_fps_x10`: actual receive/USB-completion rates multiplied by ten.
+- `desired_generation`, `desired_token`: current requested configuration;
+  `applied_generation`, `applied_token`: confirmed ESP configuration. Both pairs
+  must match, and `config_error` must be zero, to confirm current settings.
+- `attempted_generation`, `config_error`: most recently attempted settings and
+  their failure. Error 1 invalid configuration, 2 initialization, 3 unsupported
+  sensor, 4 geometry setup, 5 JPEG quality, 6 repeated bad JPEG geometry;
+  32 onward identifies the setting index in `configuration.h`.
+- `sensor_pid`: actual detected sensor (38/0x26 is OV2640, 13920/0x3660 is OV3660).
+- `invalid`, `spi_timeouts`, `header_errors`, `length_errors`, `payload_errors`,
+  `overflows`, `rx_bytes`, `rx_prefix`: transport integrity and packet diagnostics.
+- `capture_errors`, `oversized`, `command_errors`, `link_timeouts`, `quality`:
+  latest ESP counters and current compression, including status-only replies.
+- `stale_frames`, `replaced`, `seq_gaps`: discarded old configurations, frames
+  replaced for bounded latency, and sender application sequence gaps. Warmup
+  frames and oversize captures can produce gaps; this does not count every
+  internal sensor-driver discard.
+- `submit_errors`, `cancelled`, `usb_restarts`: USB submission, app-close
+  cancellation and recovery reconnects. Closing a host can cancel an in-flight
+  frame. `max_queue_us` measures only receive-to-submit delay, not total latency.
+
+Host tests exercise configuration corruption/bounds, sensor callback failures,
+reset recovery, mode fencing, descriptor intervals, the actual pinned TinyUSB
+probe/commit implementation, DMA accounting and USB endpoint recovery.
 
 ```sh
 sh test/run-usb-cam-tests.sh
 sh test/run-servo-tests.sh
-pio run -e usb_vga30 -e usb_svga15 -e usb_hd10 -e usb_qvga30 -e esp32cam
-pio run -d pico -e zero_vga30 -e zero_svga15 -e zero_hd10 -e zero_qvga30 -e pico_vga30
+pio run -e usb_camera -e esp32cam
+pio run -d pico -e zero_camera -e pico_camera -e zero_camera_fast
 ```
 
-Host tests use AddressSanitizer/UndefinedBehaviorSanitizer and the actual USB
-descriptor source. They cover CRC, corruption/truncation, JPEG bounds, frame
-ownership under slow USB, stale-frame ordering and descriptor limits for every
-profile. They also check endpoint abort ordering, timeout recovery requests,
-the early-silicon fallback and DMA byte counting after abort. Short hardware
-capture results appear below; long-duration timing, latency and motion quality
-still need the remaining physical tests above.
+Builds/tests passed during development on 2026-11-05. The runtime Pico build uses
+about 208 KiB of static RAM; that does not measure runtime stack headroom.
+**Hardware verification of the runtime-mode version is pending.** The previous
+25 FPS VGA result belongs to the checkpoint, not every new resolution.
 
-Verified locally on 2026-11-05: all five ESP32 environments and all five Pico
-environments built successfully; the USB host tests and existing servo tests
-passed. The USB tests ran with AddressSanitizer and UndefinedBehaviorSanitizer.
-The current Pico VGA build uses 83,552 bytes of static RAM; HD uses 194,144 bytes. These
-figures do not measure runtime stack usage or camera performance. An independent
-source review identified the ISO restart issue, which was addressed with a
-failing-then-passing regression test and a rebuild of every Pico profile.
+Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
+change a sensor setting and restore defaults, reboot either board, close/reopen
+applications and run a 30-minute moving-scene soak. Measure actual frames and
+losses; use a filmed stopwatch to measure end-to-end latency. No captured audio
+or footage is needed for the automated decode checks.
 
-Generated default artifacts are `.pio/build/usb_vga30/firmware.bin` (use the
-PlatformIO uploader so all ESP32 images receive the correct offsets) and
-`pico/.pio/build/zero_vga30/firmware.uf2` (BOOTSEL drag-and-drop). Both boards were
-subsequently flashed and verified with the initial VGA30 firmware. The Pico
-enumerated as a UVC camera and CDC diagnostics device at a 125 MHz peripheral
-clock. The revised GP0/GP1/GP2/GP3 VGA30 mapping was also flashed and verified;
-the Pico re-enumerated with working CDC diagnostics. All five Pico profiles
-rebuilt and the USB host tests passed after the remap. Subsequent wired testing
-and transport fixes are described below.
+## Source and design
 
-The first wired test exposed a receive-count bug: RP2040 `CHAN_ABORT` clears
-`TRANS_COUNT` ([datasheet, section 2.5](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)).
-The receiver now counts completed bytes using the DMA destination address after
-abort has flushed pending writes. A regression test reproduces counter clearing
-and verifies empty, partial, final-write and overlength cases. With this fix,
-VGA frames arrived over SPI at approximately 24.9-25.0 FPS with zero invalid
-packets and SPI timeouts during the initial sample. This is a short SPI result,
-not a long-soak benchmark. After switching to bulk UVC, macOS AVFoundation/FFmpeg
-successfully decoded 192 VGA frames during an eight-second capture. Steady USB
-completion counters measured approximately 24.9-25.0 FPS with zero invalid
-packets or submission errors during that capture. No footage or audio was saved.
-After fixing TinyUSB's endpoint busy/claim reset, three further five-second
-captures succeeded across close/reopen cycles (122, 121 and 123 decoded frames).
-SPI invalid and timeout counters stayed zero. Closing a stream can cancel an
-in-flight frame and briefly increment submission/cancellation counters; those
-counters did not keep increasing during the subsequent captures. A 30-minute
-moving-scene soak and end-to-end latency measurement remain outstanding.
+- [Approved runtime design](docs/usb-camera-runtime-design.md) and
+  [implementation plan](docs/usb-camera-runtime-plan.md).
+- Shared configuration, modes, protocol and buffer ownership: `shared/usb_cam/`.
+- ESP camera control and SPI master: `src/usb_cam/`.
+- Pico SPI DMA, UVC/CDC and pinned TinyUSB adapters: `pico/src/`.
+- Prior art: [GB Interceptor](https://github.com/Staacks/gbinterceptor),
+  [TinyUSB](https://github.com/hathach/tinyusb),
+  [Espressif camera](https://github.com/espressif/esp32-camera), and
+  [ArduCAM PICO_SPI_CAM](https://github.com/ArduCAM/PICO_SPI_CAM).
+  No exact previously validated ESP32-to-RP2040 UVC bridge was established.
+- Hardware constraints: [RP2040 datasheet](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)
+  and [ESP boot pins](https://docs.espressif.com/projects/esptool/en/latest/esp32/advanced-topics/boot-mode-selection.html).
+
+The SDK is not edited. Version-guarded project adapters retain buffer-ownership
+and safe endpoint-reopen fixes, supply complete multi-mode negotiation and clamp
+MJPEG limits to real buffers. USB VID/PID CAFE:4050 is a prototype identifier,
+not an assigned product identity. See [third-party notices](pico/THIRD_PARTY_NOTICES.md).

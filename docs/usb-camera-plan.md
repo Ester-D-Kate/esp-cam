@@ -1,5 +1,8 @@
 # USB POV camera implementation plan
 
+Completed checkpoint plan. Current work continues in
+[usb-camera-runtime-plan.md](usb-camera-runtime-plan.md).
+
 Goal: build paired PlatformIO firmware for a measured USB-only camera prototype.
 Spec: [usb-camera-design.md](usb-camera-design.md).
 Execute inline; user authorized implementation and delegated routine choices.

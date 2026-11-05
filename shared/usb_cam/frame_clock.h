@@ -9,6 +9,7 @@ class FrameClock {
   explicit FrameClock(uint32_t interval_us) : interval_us_(interval_us) {}
   bool due(uint32_t now_us) const { return uint32_t(now_us - last_us_) >= interval_us_; }
   void sent(uint32_t now_us) { last_us_ = now_us; }
+  void interval(uint32_t interval_us) { interval_us_ = interval_us; }
 
  private:
   uint32_t interval_us_;

@@ -1,5 +1,9 @@
 # USB POV camera design
 
+This documents the first working checkpoint. The approved next version is
+[runtime mode selection](usb-camera-runtime-design.md); current setup is in
+[USB_CAMERA.md](../USB_CAMERA.md).
+
 ## Goal and scope
 
 Build a USB-only POV camera from the existing AI Thinker ESP32-CAM and Waveshare

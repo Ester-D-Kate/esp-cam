@@ -19,17 +19,18 @@ static std::vector<uint8_t> jpeg(uint16_t width, uint16_t height) {
 static void test_crc_and_frame_validation() {
   assert(crc32(reinterpret_cast<const uint8_t*>("123456789"), 9) == 0xcbf43926);
   assert(crc32(nullptr, 0) == 0);
-  auto payload = jpeg(kProfile.width, kProfile.height);
+  auto payload = jpeg(640, 480);
   size_t length = payload.size();
-  assert(validate_jpeg(payload.data(), length, kProfile.width, kProfile.height));
+  assert(validate_jpeg(payload.data(), length, 640, 480));
   payload.push_back(0);  // Sensor DMA may leave padding after the EOI marker.
   length = payload.size();
-  assert(validate_jpeg(payload.data(), length, kProfile.width, kProfile.height));
+  assert(validate_jpeg(payload.data(), length, 640, 480));
   assert(length == payload.size() - 1);
   assert(!validate_jpeg(payload.data(), length, 1, 1));
   payload.resize(length);
 
   Header source{};
+  source.kind = PacketKind::Frame;
   source.sequence = 0xffffffff;
   source.timestamp_us = 0xfffffff0;
   source.payload_size = uint32_t(payload.size());
@@ -37,7 +38,7 @@ static void test_crc_and_frame_validation() {
   source.quality = 16;
   std::array<uint8_t, kHeaderSize> wire{};
   encode_header(source, wire.data());
-  assert(wire[0] == 'P' && wire[1] == 'O' && wire[2] == 'V' && wire[3] == '1');
+  assert(wire[0] == 'P' && wire[1] == 'O' && wire[2] == 'V' && wire[3] == '2');
   Header decoded{};
   assert(decode_header(wire.data(), wire.size(), decoded));
   assert(decoded.sequence == source.sequence && decoded.timestamp_us == source.timestamp_us);
@@ -54,7 +55,7 @@ static void test_crc_and_frame_validation() {
   assert(!validate_payload(decoded, payload.data(), payload.size()));
   payload[30] ^= 1;
   assert(!validate_payload(decoded, payload.data(), payload.size() - 1));
-  source.payload_size = kProfile.max_jpeg + 1;
+  source.payload_size = kMaxJpeg + 1;
   encode_header(source, wire.data());
   assert(!decode_header(wire.data(), wire.size(), decoded));
   source.payload_size = 0;
@@ -63,15 +64,15 @@ static void test_crc_and_frame_validation() {
 }
 
 static void test_jpeg_bounds() {
-  auto payload = jpeg(kProfile.width, kProfile.height);
+  auto payload = jpeg(640, 480);
   for (size_t n = 0; n < payload.size(); ++n) {
     size_t length = n;
-    assert(!validate_jpeg(payload.data(), length, kProfile.width, kProfile.height));
+    assert(!validate_jpeg(payload.data(), length, 640, 480));
   }
   payload[4] = 0xff;
   payload[5] = 0xff;
   size_t length = payload.size();
-  assert(!validate_jpeg(payload.data(), length, kProfile.width, kProfile.height));
+  assert(!validate_jpeg(payload.data(), length, 640, 480));
 }
 
 static void test_slow_usb_ownership() {
@@ -144,6 +145,9 @@ static void test_clock_wrap_and_long_idle() {
   clock.sent(0xfffffff0);
   assert(!clock.due(0x20));
   assert(clock.due(0x9000));
+  clock.interval(200000);
+  clock.sent(100);
+  assert(!clock.due(200099) && clock.due(200100));
 }
 
 int main() {
