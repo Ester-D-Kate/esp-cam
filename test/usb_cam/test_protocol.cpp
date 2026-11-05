@@ -151,6 +151,22 @@ static void test_clock_wrap_and_long_idle() {
 }
 
 int main() {
+  // Timing reports must retain a gap crossing report boundaries, handle timer
+  // wrap, and exclude an idle/new-stream interval after reset.
+  FrameGap gaps;
+  gaps.observe(0);
+  assert(gaps.take_max() == 0);
+  gaps.observe(100000);
+  assert(gaps.take_max() == 100000);
+  gaps.observe(200000);
+  gaps.observe(500000);
+  assert(gaps.take_max() == 300000);
+  assert(gaps.take_max() == 0);
+  gaps.reset();
+  gaps.observe(0xfffffff0u);
+  assert(gaps.take_max() == 0);
+  gaps.observe(0x20u);
+  assert(gaps.take_max() == 48);
   test_crc_and_frame_validation();
   test_jpeg_bounds();
   test_slow_usb_ownership();

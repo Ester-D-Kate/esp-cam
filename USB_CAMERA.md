@@ -116,25 +116,28 @@ is held in RAM; a Pico power cycle restores the 20 MHz startup default.
 | More detail with near-30-FPS motion | 800x600 / 30 | about 27 |
 | Fastest motion, less detail | 320x240 / 60 (experimental menu) | about 57 |
 | Higher resolution, slower motion | 1280x720 / 15 | about 13 |
-| Full OV2640 resolution, slower video | 1600x1200 / 10 | about 9.7–9.8; brief gaps remain |
+| Full OV2640 resolution, slower video | 1600x1200 / 10 | about 10; see the repair measurements below |
 
-Avoid 1600x1200 / 15 for dependable continuous capture with the current firmware:
-the longer tests below reproduced a frozen feed at both 20 and 24 MHz. These
-bench results do not certify a moving POV scene or constant FPS in all lighting.
+The UXGA repair below removes a reproduced size-budget freeze at requested
+15 FPS. That request is still not a guarantee of 15 delivered frames per second.
+These bench results do not certify a moving POV scene or constant FPS in all lighting.
 
 JPEG data stays compressed from the sensor to USB. Three fixed 64 KiB buffers
 bound Pico RAM. The selected interval also sets a conservative 720 KiB/s frame
-budget. If a frame exceeds its budget, it is counted and compression increases
+budget, except UXGA, which always uses the full 64 KiB slot. If a frame exceeds
+its budget, it is counted and compression increases
 (up to quality value 50). Smaller quality numbers mean better JPEG quality.
 Changing modes resets to that mode's default unless an explicit quality override
 is active. The firmware never upscales or repeats a frame to inflate FPS.
-The frame-size limit is 49,151 bytes at a requested 15 FPS and 65,536 bytes at
-10 FPS. If even quality 50 produces a larger JPEG, that frame is discarded.
+For UXGA, the frame-size limit was previously 49,151 bytes at requested 15 FPS;
+it is now 65,536 bytes at all advertised rates. If even quality 50 produces a
+larger JPEG, that frame is discarded.
 Consecutive oversized frames can therefore freeze the displayed image while
 the camera and SPI status channel remain healthy. This condition was reproduced
-at 1600x1200/15; a zero `config_error` alone does not prove video is flowing.
-Reducing the requested rate to 10 allows larger JPEGs but is not a zero-drop
-guarantee. Monitor actual `rx_frames`, `usb_frames` and `oversized` counters.
+with the old 1600x1200/15 limit; a zero `config_error` alone does not prove video
+is flowing. The larger allowance removes that failure in the tested scene,
+but does not guarantee zero drops or permit JPEGs above 64 KiB. Monitor actual
+`rx_frames`, `usb_frames` and `oversized` counters.
 
 ## Pico-controlled settings
 
@@ -232,6 +235,10 @@ One JSON report per second includes:
 - `submit_errors`, `cancelled`, `usb_restarts`: USB submission, app-close
   cancellation and recovery reconnects. Closing a host can cancel an in-flight
   frame. `max_queue_us` measures only receive-to-submit delay, not total latency.
+- `usb_gap_us`: largest interval between successful USB frame completions since
+  the previous report, in microseconds. Reset on COMMIT/recovery; reports retain
+  the preceding completion timestamp. An unfinished stall is measured only when
+  the next frame completes. Compare it with host decode gaps to locate delays.
 
 Host tests exercise configuration corruption/bounds, sensor callback failures,
 reset recovery, mode fencing, descriptor intervals, the actual pinned TinyUSB
@@ -276,9 +283,10 @@ or zero-drop guarantee.
 The current source keeps the driver initialized across configuration changes and
 reports capture timeouts promptly. Recovery now covers errors 2, 6, 7 and 8 with
 the same two-attempt limit; unsupported controls are not retried. Host tests and
-both ESP/four Pico builds pass. **The ESP runs lifecycle revision `4735f12`;
-the Pico runs `e7ea38d`, which also reports passive SPI pin levels.** Both uploads
-were verified. Kate confirmed that the attached sensor is OV2640, not OV3660.
+both ESP/four Pico builds pass. **The ESP runs lifecycle revision `4735f12`.**
+Pico revision `e7ea38d` added passive SPI pin levels; the subsequent UXGA and bulk
+termination repair is recorded below. The uploads were verified. Kate confirmed
+that the attached sensor is OV2640, not OV3660.
 Remaking IO13->GP0, IO15->GP1 and IO14->GP2 restored communication after reassembly.
 Post-update tests decoded all nine sizes at both 20 and 24 MHz. Ten additional
 large/small resolution changes passed with OBS closed. The driver stayed
@@ -428,6 +436,78 @@ expected lighting/power conditions and measuring end-to-end latency with a
 filmed stopwatch. Inter-frame gaps measured here are not latency measurements.
 No captured audio or footage is needed for the automated decode checks.
 
+### UXGA and USB termination repair — 2026-11-06
+
+Two separate faults were isolated:
+
+1. The requested 15-FPS preset restricted UXGA JPEGs to 49,151 bytes. In the
+   failing scene, even maximum permitted compression could not meet it, so the
+   ESP discarded every frame. The Pico now requests the existing full 65,536-byte
+   capacity for UXGA at every rate. This uses the installed ESP contract; the
+   ESP firmware was not changed or reflashed. The UXGA descriptor's maximum
+   bitrate now covers that larger allowance.
+2. The pinned TinyUSB driver omitted the terminating zero-length packet when a
+   short final UVC bulk payload ended on a 64-byte USB packet boundary. Its frame
+   completion counter advanced while the host could wait for or combine the next
+   payload. New timing diagnostics showed approximately 100 ms Pico completion
+   gaps during approximately 300 ms host decode gaps. The adapter now submits
+   the required ZLP and retains frame ownership until completion, including
+   safe cancellation and failure handling. This follows the
+   [UVC bulk transport discussion](https://www.mail-archive.com/linux-uvc-devel%40lists.berlios.de/msg03790.html)
+   and [documented bulk termination behavior](https://doc.segger.com/UM09001_emUSBD.html#USBD_BULK_WriteEx()).
+
+The frame-budget repair alone restored UXGA/15 (~9.80 FPS over 90 seconds), but
+five gaps above 250 ms remained. After the USB termination repair, both 90-second
+checks below had no steady arrival or timestamp gaps above 250 ms:
+
+| Requested mode | Decoded frames / duration | Steady FPS | Maximum arrival gap |
+|---|---:|---:|---:|
+| 1600x1200 / 10 | 898 / 90 s | 9.98 | 203 ms |
+| 1600x1200 / 15 | 900 / 90 s | 9.99 | 189 ms |
+
+These used NV12 through FFmpeg/AVFoundation at requested XCLK 24 MHz. The first
+run discarded one oversized frame in the steady window while quality adapted
+from 20 to 22. The second recorded one invalid SPI header and one receive
+timeout, recovered automatically, and continued decoding. Neither run added a
+capture error or USB restart. Thus the reproduced long freeze and recurring
+300–400 ms host gaps were removed in these tests, but isolated frame losses
+remain possible; 15 requested FPS still delivered about 10 in this scene.
+
+The uploaded `zero_camera_uart` UF2 SHA-256 is
+`e391baa957b70ade2ed0538f8d8fd1eab96b8f6560ebc06b792b2a968cf37118`.
+USB/servo host suites, all four Pico builds and the ESP compatibility build
+passed. The SDK files and wiring are unchanged. Test logs and timestamped JSON
+files are under `~/Desktop/Codex-projects/esp-cam-validation/`; the initial
+post-repair records are `20261106-031450-1600x1200-10.json` and
+`20261106-031621-1600x1200-15.json`.
+
+A first five-minute attempt is **not a completed soak pass**. It decoded 2,569
+UXGA frames over about 257 seconds before a second host client changed the
+device to 1280x720. macOS `UVCAssistant` logged the format change and an added
+streaming client at 03:20:52; Pico confirmed the new mode with no USB restart.
+FFmpeg still expected 1600x1200 raw frames and rejected the smaller buffers.
+This is separate from the firmware faults above. The source application was
+not identified. Evidence: `20261106-032205-1600x1200-15.json` and
+`uxga-soak-host-format-change.log`. The measurement tool now aborts explicitly
+on unexpected mode changes or ten seconds without a decoded frame and reports
+the unfinished trailing gap, rather than relying only on completed gap pairs.
+
+At the unchanged 20 MHz startup clock, a subsequent 60-second UXGA/15 check
+decoded 572 frames (~9.54 FPS), with a maximum 180 ms arrival gap and no steady
+increments in oversized/capture/invalid/SPI-timeout/USB-restart counters.
+Record: `20261106-032531-1600x1200-15.json`.
+
+The planned repeat soak and smaller-mode sweep stopped before capturing because
+OBS had reopened. Its current properties show 1280x720 / 15, with buffering
+enabled. That preview was left available and its settings were not changed.
+An uninterrupted five-minute post-repair soak and a new smaller-mode hardware
+sweep remain outstanding; the pre-repair all-mode measurements above and the
+post-repair host tests must not be mistaken for those hardware checks.
+Final read-only diagnostics confirmed OBS's 1280x720/15 configuration applied
+at 20 MHz, with 63 additional USB completions over approximately five seconds
+and no new capture, oversize, invalid-packet, SPI-timeout or USB-restart errors.
+This confirms ongoing device transfers, not an OBS-internal decoded FPS result.
+
 ## Source and design
 
 - [Approved runtime design](docs/usb-camera-runtime-design.md) and
@@ -445,5 +525,7 @@ No captured audio or footage is needed for the automated decode checks.
 
 The SDK is not edited. Version-guarded project adapters retain buffer-ownership
 and safe endpoint-reopen fixes, supply complete multi-mode negotiation and clamp
-MJPEG limits to real buffers. USB VID/PID CAFE:4050 is a prototype identifier,
+MJPEG limits to real buffers. The video adapter also terminates short bulk
+payloads that end on a full USB packet with a zero-length packet before releasing
+frame ownership. USB VID/PID CAFE:4050 is a prototype identifier,
 not an assigned product identity. See [third-party notices](pico/THIRD_PARTY_NOTICES.md).

@@ -9,7 +9,9 @@ static bool usb_cam_control_xfer(uint8_t rhport, const tusb_control_request_t* r
                                 void* buffer, uint16_t length);
 #define tud_control_xfer usb_cam_control_xfer
 #define videod_control_xfer_cb usb_cam_sdk_video_control
+#define videod_xfer_cb usb_cam_sdk_video_xfer
 #include "class/video/video_device.c"
+#undef videod_xfer_cb
 #undef videod_control_xfer_cb
 #undef tud_control_xfer
 
@@ -76,4 +78,27 @@ bool videod_control_xfer_cb(uint8_t rhport, uint8_t stage, const tusb_control_re
 bool usb_cam_video_owns_buffer(const void* buffer) {
   videod_streaming_interface_t* stream = _get_instance_streaming(0, 0);
   return stream && stream->bufsize && stream->buffer == buffer;
+}
+
+bool videod_xfer_cb(uint8_t rhport, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
+  // The SDK ignores result. On failure retain ownership for timeout recovery;
+  // never report an incomplete frame as successfully delivered.
+  if (result != XFER_RESULT_SUCCESS) return false;
+  videod_streaming_interface_t* stream = _get_instance_streaming(0, 0);
+  if (stream && stream->buffer && stream->offset == stream->bufsize && stream->desc.ep[0]) {
+    const uint8_t* base = _videod_itf[stream->index_vc].beg;
+    const tusb_desc_endpoint_t* ep = (const tusb_desc_endpoint_t*)(base + stream->desc.ep[0]);
+    const uint16_t packet_size = tu_edpt_packet_size(ep);
+    // A final payload smaller than the negotiated maximum must end with a
+    // short USB packet. If its length is an exact packet multiple, send a ZLP
+    // before releasing the frame; otherwise the host can merge it with the
+    // next payload. A ZLP callback has length zero and falls through once.
+    if (ep->bEndpointAddress == ep_addr && ep->bmAttributes.xfer == TUSB_XFER_BULK &&
+        packet_size && xferred_bytes && xferred_bytes < stream->max_payload_transfer_size &&
+        xferred_bytes % packet_size == 0) {
+      if (!usbd_edpt_claim(rhport, ep_addr)) return false;
+      return usbd_edpt_xfer(rhport, ep_addr, NULL, 0);
+    }
+  }
+  return usb_cam_sdk_video_xfer(rhport, ep_addr, result, xferred_bytes);
 }

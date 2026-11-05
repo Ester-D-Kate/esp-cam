@@ -30,6 +30,7 @@ bool custom_quality = false;
 bool report_requested = false;
 usb_cam::ConfigRetry config_retry;
 uint32_t config_retries = 0;
+usb_cam::FrameGap usb_frame_gaps;
 
 void esp_log_poll() {
 #if USB_CAM_ESP_LOG
@@ -104,6 +105,7 @@ void diagnostics() {
   previous_completed = completed;
   previous_received = rx.frames;
   last_report = now;
+  const uint32_t usb_gap_us = usb_frame_gaps.take_max();
   if (!tud_cdc_connected()) return;
   char prefix[sizeof(rx.last_prefix) * 2 + 1];
   constexpr char hex[] = "0123456789abcdef";
@@ -135,7 +137,7 @@ void diagnostics() {
       "\"control_error\":%lu,\"control_crc_received\":%lu,\"control_crc_calculated\":%lu,"
       "\"control_prefix\":\"%s\",\"control_spi_hz\":%lu,"
       "\"camera_starts\":%lu,\"sensor_resets\":%lu,\"xclk_hz\":%lu,"
-      "\"config_retries\":%lu,\"config_retry_attempts\":%u,\"spi_gpio\":%u}\r\n",
+      "\"config_retries\":%lu,\"config_retry_attempts\":%u,\"spi_gpio\":%u,\"usb_gap_us\":%lu}\r\n",
       selected_mode, desired.width, desired.height, unsigned(10000000u / desired.interval_100ns),
       (unsigned long)rx_fps_x10, (unsigned long)usb_fps_x10,
       (unsigned long)rx.frames, (unsigned long)completed, (unsigned long)rx.invalid,
@@ -157,7 +159,7 @@ void diagnostics() {
       (unsigned long)rx.sender.control_spi_hz, (unsigned long)rx.sender.camera_starts,
       (unsigned long)rx.sender.sensor_resets, (unsigned long)rx.sender.xclk_hz,
       (unsigned long)config_retries, config_retry.attempts(),
-      unsigned(gpio_get_all() & 0x8fu)); // Passive levels: GP0/1/2/3/7; no pin changes.
+      unsigned(gpio_get_all() & 0x8fu), (unsigned long)usb_gap_us);
   // A closed/slow serial monitor must never stall the UVC stream.
   if (count > 0 && size_t(count) < sizeof(line) && tud_cdc_write_available() >= uint32_t(count)) {
     tud_cdc_write(line, uint32_t(count));
@@ -169,6 +171,7 @@ void diagnostics() {
 
 extern "C" void tud_video_frame_xfer_complete_cb(uint_fast8_t control, uint_fast8_t stream) {
   (void)control; (void)stream;
+  usb_frame_gaps.observe(time_us_32());
   ++completed;
 }
 
@@ -177,6 +180,7 @@ extern "C" int tud_video_commit_cb(uint_fast8_t control, uint_fast8_t stream,
   const UsbCamMode* mode = usb_cam_mode(parameters->bFrameIndex);
   if (control != 0 || stream != 0 || parameters->bFormatIndex != 1 ||
       !usb_cam_valid_interval(mode, parameters->dwFrameInterval)) return VIDEO_ERROR_OUT_OF_RANGE;
+  usb_frame_gaps.reset();
   usb_cam::Config next = usb_cam::mode_config(parameters->bFrameIndex, parameters->dwFrameInterval);
   next.generation = desired.generation;
   next.xclk_mhz = desired.xclk_mhz;
@@ -226,6 +230,7 @@ int main() {
         ++cancelled;
       }
       sending = nullptr;
+      usb_frame_gaps.reset();
       ++usb_restarts;
       sleep_ms(25);
       if (!tud_init(0)) panic("USB recovery initialization failed");

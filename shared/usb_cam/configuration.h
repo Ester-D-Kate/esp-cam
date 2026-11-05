@@ -118,6 +118,10 @@ inline Config mode_config(unsigned index, uint32_t interval) {
   c.interval_100ns = interval;
   const uint32_t budget = uint32_t(uint64_t(USB_CAM_BYTE_BUDGET) * interval / 10000000);
   c.max_jpeg = budget < kMaxJpeg ? budget : kMaxJpeg;
+  // UXGA can exceed the 15-FPS budget even at maximum allowed compression.
+  // Accept frames that fit our existing slots instead of freezing indefinitely.
+  // The actual delivered rate may fall below the requested rate for large JPEGs.
+  if (USB_CAM_IS_UXGA(c.width, c.height)) c.max_jpeg = kMaxJpeg;
   return c;
 }
 } // namespace usb_cam

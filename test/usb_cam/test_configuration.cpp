@@ -85,8 +85,12 @@ int main() {
       config = mode_config(i, mode->intervals[n]);
       assert(valid_config(config));
       assert(config.max_jpeg <= kMaxJpeg);
-      assert(uint64_t(config.max_jpeg) * 10000000 <=
-             uint64_t(USB_CAM_BYTE_BUDGET) * config.interval_100ns);
+      if (config.width == 1600 && config.height == 1200) {
+        assert(config.max_jpeg == 65536);
+      } else {
+        assert(uint64_t(config.max_jpeg) * 10000000 <=
+               uint64_t(USB_CAM_BYTE_BUDGET) * config.interval_100ns);
+      }
     }
   }
   assert(!usb_cam_mode(0) && !usb_cam_mode(USB_CAM_MODE_COUNT + 1));

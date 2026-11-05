@@ -54,9 +54,9 @@ static int xclk(sensor_t* s, int timer, int mhz) {
 }
 static int size(sensor_t*, framesize_t value) {
   ++writes;
-  if (value != FRAMESIZE_VGA && value != FRAMESIZE_SVGA) return -1;
-  const unsigned w = value == FRAMESIZE_VGA ? 640 : 800;
-  const unsigned h = value == FRAMESIZE_VGA ? 480 : 600;
+  if (value != FRAMESIZE_VGA && value != FRAMESIZE_SVGA && value != FRAMESIZE_UXGA) return -1;
+  const unsigned w = value == FRAMESIZE_UXGA ? 1600 : value == FRAMESIZE_VGA ? 640 : 800;
+  const unsigned h = value == FRAMESIZE_UXGA ? 1200 : value == FRAMESIZE_VGA ? 480 : 600;
   jpeg = {0xff,0xd8,0xff,0xc0,0,11,8,uint8_t(h>>8),uint8_t(h),uint8_t(w>>8),uint8_t(w),
           1,1,0x11,0,0xff,0xda,0,8,1,1,0,0,63,0,0x42,0xff,0xd9};
   frame = {}; frame.buf = jpeg.data(); frame.len = jpeg.size(); frame.width = w; frame.height = h;
@@ -210,5 +210,24 @@ int main() {
   init_ok = true; config.generation++;
   startup.configure(config); confirm(startup, status);
   assert(starts == 3 && !held);
+
+  // Regression: the UXGA/15 preset must not reject every real frame merely
+  // because it exceeds the old 48 KiB rate budget but fits our 64 KiB slots.
+  config = mode_config(9, USB_CAM_INTERVAL(15));
+  config.generation = 100;
+  startup.configure(config); confirm(startup, status);
+  const unsigned oversized_before = status.oversized;
+  for (const size_t bytes : {size_t(52 * 1024), size_t(64 * 1024)}) {
+    jpeg.insert(jpeg.end() - 2, bytes - jpeg.size(), 0x42);
+    frame.buf = jpeg.data(); frame.len = jpeg.size();
+    auto* ready = startup.capture(status, length);
+    assert(ready && length == bytes && status.oversized == oversized_before);
+    esp_camera_fb_return(ready);
+    assert(!held);
+  }
+  jpeg.insert(jpeg.end() - 2, 1, 0x42);
+  frame.buf = jpeg.data(); frame.len = jpeg.size();
+  assert(!startup.capture(status, length) && !held);
+  assert(status.oversized == oversized_before + 1);
   puts("Camera lifecycle passed: persistent driver, defaults, frame timeout, clock and recovery.");
 }

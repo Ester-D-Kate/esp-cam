@@ -319,3 +319,92 @@ PlatformIO; no dependency upgrade.
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here
 on the existing feature branch, as explicitly requested and approved.
+
+## UXGA stall repair — 2026-11-06
+
+Goal: remove the reproduced rejection of every UXGA frame above 48 KiB at
+requested 15 FPS, using the existing ESP protocol and a Pico-only upload.
+Kate has authorized autonomous fixes and requested avoiding more ESP uploads.
+Use the existing C++/PlatformIO implementation and branch, without new wiring.
+
+The selected approach allows the existing 64 KiB frame capacity for UXGA at all
+its advertised rates. Smaller modes retain their rate-dependent compression
+budgets, which produced better motion performance in the benchmark. This does
+not promise 15 FPS for large JPEGs or support JPEGs over 64 KiB. Increasing all
+mode budgets would sacrifice lower-mode FPS; increasing buffer capacity would
+also require an ESP upload and a different Pico memory layout, so neither is
+part of this repair.
+
+- [x] Add a real camera-control regression in `test_camera_control.cpp`: a UXGA
+  preset must forward valid 52 KiB and 64 KiB JPEGs, return each buffer, and reject
+  64 KiB + 1. Observe failure with the current 48 KiB allowance.
+- [x] Update `mode_config()` in `shared/usb_cam/configuration.h` for UXGA only;
+  retain the 64 KiB wire validation and smaller-mode budgets. Update the existing
+  configuration budget assertion to cover the intentional UXGA exception.
+- [x] Run the USB host suite, servo suite and all four Pico builds; check the
+  source change and binary compatibility before uploading only the Pico.
+- [x] Re-run UXGA/15 and UXGA/10 gap measurements. Compare host
+  `drop_late_frames` settings separately, without interpreting buffering as a
+  hardware fix or a proven latency improvement.
+- [ ] Complete an uninterrupted five-minute soak and repeat the smaller-mode
+  sweep after the bulk fix. Deferred because another client changed the first
+  soak's mode and OBS was running when the second attempt started. Leave the
+  active OBS preview available; do not report either attempt as a soak pass.
+- [x] Record measured results and remaining limits for the repair commit.
+
+Review correction: UXGA's advertised maximum bitrate must cover 65,536 bytes
+per 666,666 * 100 ns, rounded upward to 7,864,328 bit/s. The descriptor regression
+failed on the old 5,898,240 value before the correction. Other modes retain that
+original maximum. No buffer allocation or ESP protocol layout changes.
+
+Ruling: add a Pico-only `usb_gap_us` diagnostic to locate the remaining brief
+pauses. Disabling AVFoundation late-frame dropping did not remove them (373 ms
+maximum arrival gap at UXGA/10). Per-second maximum USB-completion gaps will
+distinguish device delivery gaps from later host/decoder gaps. This adds a few
+bytes of state and one JSON field, with timer-wrap/report-boundary/reset tests;
+it does not change streaming or require an ESP upload.
+
+The timing baseline decoded 585 frames in 60 seconds (~9.74 FPS), with five
+host gaps around 300 ms. During those same intervals, Pico completion gaps were
+about 100 ms. The pinned TinyUSB 0.18 driver completes a frame without appending
+a ZLP when its final payload is smaller than 2,048 bytes but a multiple of the
+64-byte USB endpoint packet size. This is a reproducible protocol defect and a
+candidate explanation for host-only gaps. Relevant prior implementation discussion:
+[Linux UVC bulk URB sizing](https://www.mail-archive.com/linux-uvc-devel%40lists.berlios.de/msg03790.html);
+vendor background: [SEGGER bulk zero-packet control](https://doc.segger.com/UM09001_emUSBD.html#USBD_BULK_WriteEx()).
+
+Ruling: correct that final-payload case in the existing version-guarded video
+adapter. Preserve SDK ownership until the ZLP completes; a failed claim,
+submission or completion retains ownership for existing timeout recovery. A new
+COMMIT aborts the endpoint through the existing adapter before releasing it.
+No extra pending flag or SDK source edit is needed. Actual-driver host tests
+failed on a 62-byte frame (64-byte payload) before the repair, then passed for
+short/full/multi-payload frames, ZLP failure paths and pending-ZLP cancellation.
+Read-only independent review found no actionable implementation issue and
+requested the separate direct-cancellation case, which was added and passed.
+All four Pico builds and an ESP compatibility build pass; ESP was not uploaded.
+
+Post-repair 90-second runs: UXGA/10 decoded 898 frames (~9.98 FPS, max arrival
+gap 203 ms); UXGA/15 decoded 900 (~9.99 FPS, 189 ms). Neither had a steady gap
+above 250 ms. The former had one further adaptive oversize discard; the latter
+had one invalid SPI header and one receive timeout, with automatic recovery.
+Capture errors and USB restarts did not increase in either active run.
+
+The first 300-second attempt is not a soak pass: after 257 seconds, a second
+host client changed the real stream to 720p. OS camera-service logs confirm
+the format change and added client; Pico's generation/mode changed without
+USB recovery. FFmpeg retained the old expected raw-buffer geometry and rejected
+the smaller frames. The app was not identified or closed. The client subsequently
+stopped. Updated the existing Desktop measurement tool to stop and label mode
+interference or ten seconds without decoded frames, and report trailing silence.
+A separate default-clock (20 MHz) UXGA/15 run then passed 60 seconds at ~9.54 FPS,
+maximum 180 ms arrival gap and unchanged steady error/discard/restart counters.
+
+The final repeat/sweep command stopped before opening the camera because OBS
+was running. Its properties dialog showed MJPEG Video at 1280x720, requested
+15 FPS, buffering enabled. No OBS settings were changed and the preview was
+left available. The earlier 90-second UXGA/10 and /15 and default-clock checks
+are completed passes; an uninterrupted five-minute post-repair soak and new
+smaller-mode hardware sweep remain unverified. The host suite covers every
+advertised mode/interval and both menu variants. This boundary is documented
+in USB_CAMERA.md rather than treating the interrupted soak as a firmware pass.
