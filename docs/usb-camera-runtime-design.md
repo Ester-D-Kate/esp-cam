@@ -199,3 +199,8 @@ protocol bounds, PLL order/default restoration, QXGA buffer allocation, and real
 TinyUSB negotiation. Build both ESP targets and all four Pico targets. Independent
 review precedes any ESP upload. Physical performance validation follows the one
 prepared ESP upgrade; host tests cannot establish an FPS improvement.
+
+The upgraded wire contract accepts requested intervals up to 120 FPS so future
+Pico-only tuning does not need another ESP upload. Current USB menus remain at
+60 FPS or below; this protocol ceiling does not establish achievable sensor or
+USB performance. Legacy ESP menus remain bounded by their existing contract.

@@ -76,7 +76,7 @@ inline bool supported_xclk(int mhz) {
   return mhz == 10 || mhz == 16 || mhz == 20 || mhz == 24;
 }
 inline bool valid_config(const Config& c) {
-  if (!supported_geometry(c.width, c.height) || c.interval_100ns < USB_CAM_INTERVAL(60) ||
+  if (!supported_geometry(c.width, c.height) || c.interval_100ns < USB_CAM_INTERVAL(120) ||
       c.interval_100ns > 10000000 || c.max_jpeg < 1024 || c.max_jpeg > kMaxJpeg ||
       c.quality > 50 || !supported_xclk(c.xclk_mhz) || !valid_pll(c.pll, c.xclk_mhz)) return false;
   for (unsigned i = 0; i < kSettingCount; ++i) {
@@ -125,7 +125,10 @@ inline bool decode_config(const uint8_t* data, size_t length, Config& out,
   c.generation = get32(data + 8); c.width = get16(data + 12); c.height = get16(data + 14);
   c.interval_100ns = get32(data + 16); c.max_jpeg = get32(data + 20);
   c.quality = data[24]; c.xclk_mhz = data[25];
-  if (data[76]) c.pll = {data[76], data[77], data[78], data[79], data[80], data[81]};
+  if (data[76]) {
+    c.pll.multiplier = data[76]; c.pll.sys_div = data[77]; c.pll.pre_div = data[78];
+    c.pll.root_2x = data[79]; c.pll.seld5 = data[80]; c.pll.pclk_div = data[81];
+  }
   for (unsigned i = 0; i < kSettingCount; ++i) {
     const uint16_t raw = get16(data + 28 + 2 * i);
     c.settings[i] = raw < 0x8000 ? int16_t(raw) : int16_t(int32_t(raw) - 65536);
@@ -152,7 +155,7 @@ inline Config mode_config(unsigned index, uint32_t interval, UsbCamProfile profi
   // UXGA can exceed the 15-FPS budget even at maximum allowed compression.
   // Accept frames that fit our existing slots instead of freezing indefinitely.
   // The actual delivered rate may fall below the requested rate for large JPEGs.
-  if (USB_CAM_IS_UXGA(c.width, c.height)) c.max_jpeg = kMaxJpeg;
+  if (USB_CAM_USES_FULL_SLOT(c.width, c.height)) c.max_jpeg = kMaxJpeg;
   return c;
 }
 } // namespace usb_cam

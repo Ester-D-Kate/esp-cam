@@ -635,3 +635,85 @@ MJPEG limits to real buffers. The video adapter also terminates short bulk
 payloads that end on a full USB packet with a zero-length packet before releasing
 frame ownership. USB VID/PID CAFE:4050 is a prototype identifier,
 not an assigned product identity. See [third-party notices](pico/THIRD_PARTY_NOTICES.md).
+
+## Automatic sensor profiles (prepared firmware, 2026-11-06)
+
+The upgraded pair detects the sensor after power-on and selects its USB menu.
+Changing modules requires power off, but no sensor-specific firmware build. The
+Pico initially exposes **ESP32 Camera Discovery** (CDC diagnostics only). Two
+fresh validated sensor reports select the camera identity; expect one brief USB
+reconnection. With no supported sensor, diagnostics remain available.
+
+| Detected sensor / ESP firmware | USB product / prototype PID | Menu |
+| --- | --- | --- |
+| OV2640, either firmware | ESP32 OV2640 USB Camera / CAFE:4051 | Existing nine sizes, through 1600×1200 |
+| OV3660, old ESP firmware | ESP32 OV3660 Legacy Camera / CAFE:4052 | Existing nine sizes; no PLL overrides |
+| OV3660, upgraded ESP firmware | ESP32 OV3660 USB Camera / CAFE:4053 | Eleven sizes, including 1920×1080 and 2048×1536 |
+| Not yet detected / unsupported | ESP32 Camera Discovery / CAFE:4050 | Diagnostics only |
+
+Choose the newly named device in OBS after the first upgrade. UVC frame indices
+1–9 retain their existing geometry. FHD requests 5/10 FPS (default 10), QXGA
+requests 5/10 FPS (default 5). Both use the full 64 KiB JPEG slot; starting quality
+is 28/32 respectively and compression increases if necessary. **These additional
+modes and rates are candidates pending hardware validation, not measured output.**
+An unusually detailed frame may exceed 64 KiB even at maximum compression.
+
+The standard Pico builds retain the previous rates for existing sizes. The
+`zero_camera_fast` and `zero_camera_uart` measurement builds additionally expose
+60 FPS VGA and 30 FPS HD/XGA on upgraded OV3660; their existing QVGA/QQVGA 60 FPS
+requests remain. Do not equate an OBS selection with an achievable frame rate.
+The same menu table drives descriptors, UVC validation and the ESP request.
+
+### OV3660 timing experiments without another ESP upload
+
+The upgrade exposes checked PLL controls through Pico CDC, after sensor detection.
+XCLK remains 20 MHz and PLL multiplier 0 means the SDK's normal geometry-specific
+timing. OV2640 retains its original sensor timing and rejects OV3660 PLL commands.
+A useful baseline for a non-QXGA mode at XCLK 20 MHz is:
+
+```text
+set pll_multiplier 30
+set pclk_div 12
+status
+set pll_multiplier 0
+```
+
+The first command explicitly selects the usual 50 MHz SYSCLK / 10 MHz PCLK
+calculation; the second lowers PCLK to about 8.33 MHz while retaining SYSCLK. It
+is a capture-throughput experiment, not a measured improvement. Multiplier 0
+restores the SDK timing, including its separate QXGA recipe. Available integer
+controls: `pll_multiplier`, `pll_sys_div`, `pll_pre_div`, `pll_root_2x`,
+`pll_seld5`, `pclk_div`. Field ranges and computed clock combinations are checked:
+VCO 150–500 MHz, SYSCLK <=54 MHz and PCLK <=10 MHz. Invalid combinations are
+rejected atomically; change one parameter at a time and check applied generation,
+configuration error and real frame gaps. `defaults` clears all overrides, while
+OBS resolution changes preserve explicit timing and other settings. Settings
+remain in RAM. PLL callback failure stops publication until a valid new request.
+
+Timing overrides run **after** the driver's geometry setter; switching back to
+SDK timing also reprograms geometry. No arbitrary register writes or speculative
+crop settings are exposed. The [Espressif OV3660 driver](https://github.com/espressif/esp32-camera/blob/f0bb429/sensors/ov3660.c)
+and [FPS discussion](https://github.com/espressif/esp32-camera/issues/232) explain
+why geometry and clock changes interact. Bounds use the
+[OV3660 datasheet](https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/OV3660_datasheet.pdf),
+not unverified performance claims from the discussion.
+
+### Upgrade order and compatibility
+
+Upload the new Pico first; it understands old ESP status packets and deliberately
+withholds new modes until capability bit 0 arrives. Then upload the reviewed ESP
+USB firmware once. Default configuration packets remain byte-identical to v2.
+Custom PLL fields occupy bytes 76–81; header capabilities occupy bytes 116–119.
+Old Pico firmware rejects the extended header, so upgrading ESP alone is not a
+working deployment. The fixed 128-byte packets, CRC, wiring and SPI speeds remain.
+ESP initializes buffers for QXGA, clamped by the SDK to the detected sensor's
+maximum before allocation, and retains them across mode changes.
+
+This release adds the controls needed for measured OV3660 optimization; it does
+not yet establish a faster sensor profile. Preserve the previous measured clock
+results above when comparing the new firmware.
+
+The upgraded wire contract accepts requested intervals up to 120 FPS so future
+Pico-only tuning does not need another ESP upload. Current USB menus remain at
+60 FPS or below; this protocol ceiling does not establish achievable sensor or
+USB performance. Legacy ESP menus remain bounded by their existing contract.

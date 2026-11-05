@@ -30,7 +30,7 @@ bool usbd_edpt_xfer(uint8_t port, uint8_t endpoint, uint8_t* buffer, uint16_t si
 bool usbd_edpt_release(uint8_t port, uint8_t endpoint) { (void)port; (void)endpoint; return true; }
 int tud_video_commit_cb(uint_fast8_t control, uint_fast8_t stream, const video_probe_and_commit_control_t* p) {
   (void)control; (void)stream;
-  return p->bFormatIndex == 1 && usb_cam_valid_interval(usb_cam_mode(p->bFrameIndex), p->dwFrameInterval) ?
+  return p->bFormatIndex == 1 && usb_cam_valid_interval(usb_cam_profile_mode(usb_cam_usb_profile(), p->bFrameIndex), p->dwFrameInterval) ?
       VIDEO_ERROR_NONE : VIDEO_ERROR_OUT_OF_RANGE;
 }
 void tud_video_frame_xfer_complete_cb(uint_fast8_t control, uint_fast8_t stream) {
@@ -44,12 +44,13 @@ static void recommit(void) {
   assert(videod_control_xfer_cb(0, CONTROL_STAGE_SETUP, &request));
   video_probe_and_commit_control_t params = {0};
   params.bFormatIndex = 1; params.bFrameIndex = USB_CAM_DEFAULT_MODE;
-  params.dwFrameInterval = usb_cam_mode(USB_CAM_DEFAULT_MODE)->default_interval;
+  params.dwFrameInterval = usb_cam_profile_mode(usb_cam_usb_profile(), USB_CAM_DEFAULT_MODE)->default_interval;
   memcpy(outbound, &params, sizeof(params));
   assert(videod_control_xfer_cb(0, CONTROL_STAGE_DATA, &request));
 }
 
-int main(void) {
+static void check_profile(UsbCamProfile profile) {
+  usb_cam_usb_select_profile(profile);
   const uint8_t* config = tud_descriptor_configuration_cb(0);
   videod_init();
   assert(videod_open(0, (const tusb_desc_interface_t*)(config + 17), 1024) > 0);
@@ -58,8 +59,8 @@ int main(void) {
   assert(videod_control_xfer_cb(0, CONTROL_STAGE_SETUP, &request));
   assert(reply.bFrameIndex == 1 && reply.dwFrameInterval == 333333);
   assert(reply.dwMaxVideoFrameSize == 65536 && reply.dwMaxPayloadTransferSize == 2048);
-  for (unsigned i = 1; i <= 9; ++i) {
-    const UsbCamMode* mode = usb_cam_mode(i);
+  for (unsigned i = 1; i <= usb_cam_profile_count(profile); ++i) {
+    const UsbCamMode* mode = usb_cam_profile_mode(usb_cam_usb_profile(), i);
     for (unsigned n = 0; n < mode->interval_count; ++n) {
       request.bmRequestType = 0x21; request.bRequest = VIDEO_REQUEST_SET_CUR;
       request.wValue = VIDEO_VS_CTL_COMMIT << 8;
@@ -157,7 +158,13 @@ int main(void) {
   assert(videod_control_xfer_cb(0, CONTROL_STAGE_SETUP, &request));
   memset(outbound, 0, sizeof(reply));
   ((video_probe_and_commit_control_t*)outbound)->bFormatIndex = 1;
+  ((video_probe_and_commit_control_t*)outbound)->bFrameIndex = usb_cam_profile_count(profile) + 1;
+  assert(!videod_control_xfer_cb(0, CONTROL_STAGE_DATA, &request));
   ((video_probe_and_commit_control_t*)outbound)->bFrameIndex = 250;
   assert(!videod_control_xfer_cb(0, CONTROL_STAGE_DATA, &request));
+}
+int main(void) {
+  for (unsigned p = USB_CAM_PROFILE_OV2640; p <= USB_CAM_PROFILE_OV3660; ++p) check_profile((UsbCamProfile)p);
+  check_profile(USB_CAM_PROFILE_OV2640);
   puts("Pinned TinyUSB passed: negotiation, bulk termination, failed transfers and cancellation.");
 }

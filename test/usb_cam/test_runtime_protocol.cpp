@@ -62,6 +62,12 @@ int main() {
     assert(!decode_header(bytes.data(), bytes.size(), decoded));
     bytes[i] ^= 1;
   }
+  frame.interval_100ns = USB_CAM_INTERVAL(120);
+  encode_header(frame, bytes.data());
+  assert(decode_header(bytes.data(), bytes.size(), decoded));
+  frame.interval_100ns--;
+  encode_header(frame, bytes.data());
+  assert(!decode_header(bytes.data(), bytes.size(), decoded));
   status.capabilities = kSensorProfilesCapability;
   encode_header(status, bytes.data());
   assert(decode_header(bytes.data(), bytes.size(), decoded));

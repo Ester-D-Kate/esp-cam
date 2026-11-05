@@ -5,7 +5,7 @@
 #include "configuration.h"
 namespace usb_cam {
 enum class CommandResult { Invalid, Changed, Status };
-inline CommandResult apply_command(const char* line, Config& current) {
+inline CommandResult apply_command(const char* line, Config& current, UsbCamProfile profile = USB_CAM_PROFILE_OV2640) {
   if (!line) return CommandResult::Invalid;
   if (strcmp(line, "status") == 0) return CommandResult::Status;
   Config next = current;
@@ -13,8 +13,8 @@ inline CommandResult apply_command(const char* line, Config& current) {
     next = Config{};
     next.width = current.width; next.height = current.height;
     next.interval_100ns = current.interval_100ns; next.max_jpeg = current.max_jpeg;
-    for (unsigned i = 1; i <= USB_CAM_MODE_COUNT; ++i) {
-      const auto* mode = usb_cam_mode(i);
+    for (unsigned i = 1; i <= usb_cam_profile_count(profile); ++i) {
+      const auto* mode = usb_cam_profile_mode(profile, i);
       if (mode->width == current.width && mode->height == current.height) next.quality = mode->quality;
     }
   } else {
@@ -39,7 +39,7 @@ inline CommandResult apply_command(const char* line, Config& current) {
       next.xclk_mhz = uint8_t(value);
     } else if (named("pll_multiplier") || named("pll_sys_div") || named("pll_pre_div") ||
                named("pll_root_2x") || named("pll_seld5") || named("pclk_div")) {
-      if (use_default || value < 0 || value > 31) return CommandResult::Invalid;
+      if (profile != USB_CAM_PROFILE_OV3660 || use_default || value < 0 || value > 31) return CommandResult::Invalid;
       if (named("pll_multiplier")) next.pll.multiplier = uint8_t(value);
       else if (named("pll_sys_div")) next.pll.sys_div = uint8_t(value);
       else if (named("pll_pre_div")) next.pll.pre_div = uint8_t(value);

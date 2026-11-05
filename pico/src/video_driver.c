@@ -27,9 +27,9 @@ static bool camera_stream_control(const tusb_control_request_t* request) {
 static bool normalize_probe(video_probe_and_commit_control_t* p, uint8_t request, bool strict) {
   if (!strict) {
     if (!p->bFormatIndex) p->bFormatIndex = 1;
-    if (!p->bFrameIndex) p->bFrameIndex = request == VIDEO_REQUEST_GET_MAX ? USB_CAM_MODE_COUNT : USB_CAM_DEFAULT_MODE;
+    if (!p->bFrameIndex) p->bFrameIndex = request == VIDEO_REQUEST_GET_MAX ? usb_cam_profile_count(usb_cam_usb_profile()) : USB_CAM_DEFAULT_MODE;
   }
-  const UsbCamMode* mode = usb_cam_mode(p->bFrameIndex);
+  const UsbCamMode* mode = usb_cam_profile_mode(usb_cam_usb_profile(), p->bFrameIndex);
   if (p->bFormatIndex != 1 || !mode) return false;
   if (!usb_cam_valid_interval(mode, p->dwFrameInterval)) {
     if (strict) return false;

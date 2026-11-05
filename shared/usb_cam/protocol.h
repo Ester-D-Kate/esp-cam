@@ -76,7 +76,7 @@ inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
     if (h.payload_size || h.payload_crc) return false;
   } else if (h.config_error || h.payload_size < 4 || h.payload_size > kMaxJpeg ||
              !supported_geometry(h.width, h.height) ||
-             h.interval_100ns < USB_CAM_INTERVAL(60) || h.interval_100ns > 10000000) return false;
+             h.interval_100ns < USB_CAM_INTERVAL(120) || h.interval_100ns > 10000000) return false;
   out = h;
   return true;
 }

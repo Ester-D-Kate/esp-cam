@@ -6,12 +6,12 @@
 #define USB_CAM_MODE_COUNT 9
 #define USB_CAM_DEFAULT_MODE 1
 #define USB_CAM_INTERVAL(fps) (10000000u / (fps))
-#define USB_CAM_IS_UXGA(w, h) ((w) >= 1600u && (h) >= 1080u)
-// UXGA uses the full slot; other modes retain the normal byte-rate budget.
+#define USB_CAM_USES_FULL_SLOT(w, h) ((w) >= 1600u && (h) >= 1080u)
+// Full-resolution modes use the full slot; other modes retain the normal byte-rate budget.
 // Round upward because discrete frame intervals are integer 100 ns units.
-#define USB_CAM_MAX_BITRATE(w, h, fps) \
-  (USB_CAM_IS_UXGA(w, h) ? \
-   (uint32_t)(((uint64_t)USB_CAM_BUFFER_BYTES * 8u * 10000000u + USB_CAM_INTERVAL(fps) - 1u) / USB_CAM_INTERVAL(fps)) : \
+#define USB_CAM_MAX_BITRATE_INTERVAL(w, h, interval) \
+  (USB_CAM_USES_FULL_SLOT(w, h) ? \
+   (uint32_t)(((uint64_t)USB_CAM_BUFFER_BYTES * 8u * 10000000u + (interval) - 1u) / (interval)) : \
    USB_CAM_BYTE_BUDGET * 8u)
 // Rates are requests, not measurements. Enable 60 FPS on the Pico only after
 // hardware characterization; the ESP protocol already accepts this interval.

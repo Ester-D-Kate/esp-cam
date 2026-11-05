@@ -24,7 +24,8 @@ uint32_t last_bytes = 0;
 uint32_t max_queue_us = 0;
 usb_cam::Header sender;
 usb_cam::Config desired;
-unsigned selected_mode = USB_CAM_DEFAULT_MODE;
+unsigned selected_mode = 0;
+usb_cam::ProfileDiscovery profile_discovery;
 uint32_t stale_frames = 0;
 bool custom_quality = false;
 bool report_requested = false;
@@ -65,7 +66,7 @@ void commands() {
       reset_usb_boot(0, 0);
     }
     const auto result = reader.overflowed() ? usb_cam::CommandResult::Invalid :
-                        usb_cam::apply_command(reader.line(), desired);
+                        usb_cam::apply_command(reader.line(), desired, usb_cam_usb_profile());
     if (result == usb_cam::CommandResult::Changed) {
       config_retry.new_request(receiver_stats().status_packets);
       if (strncmp(reader.line(), "set quality ", 12) == 0) custom_quality = true;
@@ -120,9 +121,10 @@ void diagnostics() {
     control_prefix[2 * i + 1] = hex[rx.sender.control_prefix[i] & 15];
   }
   control_prefix[32] = '\0';
-  char line[1536];
+  char line[1792];
+  static_assert(CFG_TUD_CDC_TX_BUFSIZE >= sizeof(line), "Diagnostics must fit the CDC FIFO");
   const int count = snprintf(line, sizeof(line),
-      "{\"mode\":%u,\"width\":%u,\"height\":%u,\"target_fps\":%u,"
+      "{\"profile\":%u,\"mode\":%u,\"width\":%u,\"height\":%u,\"target_fps\":%u,"
       "\"rx_fps_x10\":%lu,\"usb_fps_x10\":%lu,\"rx_frames\":%lu,\"usb_frames\":%lu,"
       "\"invalid\":%lu,\"spi_timeouts\":%lu,\"replaced\":%lu,\"seq_gaps\":%lu,"
       "\"sender_resets\":%lu,\"submit_errors\":%lu,\"cancelled\":%lu,\"usb_restarts\":%lu,"
@@ -137,8 +139,10 @@ void diagnostics() {
       "\"control_error\":%lu,\"control_crc_received\":%lu,\"control_crc_calculated\":%lu,"
       "\"control_prefix\":\"%s\",\"control_spi_hz\":%lu,"
       "\"camera_starts\":%lu,\"sensor_resets\":%lu,\"xclk_hz\":%lu,"
-      "\"config_retries\":%lu,\"config_retry_attempts\":%u,\"spi_gpio\":%u,\"usb_gap_us\":%lu}\r\n",
-      selected_mode, desired.width, desired.height, unsigned(10000000u / desired.interval_100ns),
+      "\"config_retries\":%lu,\"config_retry_attempts\":%u,\"spi_gpio\":%u,\"usb_gap_us\":%lu,"
+      "\"capabilities\":%lu,\"pll_multiplier\":%u,\"pll_sys_div\":%u,"
+      "\"pll_pre_div\":%u,\"pll_root_2x\":%u,\"pll_seld5\":%u,\"pclk_div\":%u}\r\n",
+      unsigned(usb_cam_usb_profile()), selected_mode, desired.width, desired.height, unsigned(10000000u / desired.interval_100ns),
       (unsigned long)rx_fps_x10, (unsigned long)usb_fps_x10,
       (unsigned long)rx.frames, (unsigned long)completed, (unsigned long)rx.invalid,
       (unsigned long)rx.timeouts, (unsigned long)rx.replaced, (unsigned long)rx.sequence_gaps,
@@ -159,7 +163,9 @@ void diagnostics() {
       (unsigned long)rx.sender.control_spi_hz, (unsigned long)rx.sender.camera_starts,
       (unsigned long)rx.sender.sensor_resets, (unsigned long)rx.sender.xclk_hz,
       (unsigned long)config_retries, config_retry.attempts(),
-      unsigned(gpio_get_all() & 0x8fu), (unsigned long)usb_gap_us);
+      unsigned(gpio_get_all() & 0x8fu), (unsigned long)usb_gap_us,
+      (unsigned long)rx.sender.capabilities, desired.pll.multiplier, desired.pll.sys_div,
+      desired.pll.pre_div, desired.pll.root_2x, desired.pll.seld5, desired.pll.pclk_div);
   // A closed/slow serial monitor must never stall the UVC stream.
   if (count > 0 && size_t(count) < sizeof(line) && tud_cdc_write_available() >= uint32_t(count)) {
     tud_cdc_write(line, uint32_t(count));
@@ -177,13 +183,14 @@ extern "C" void tud_video_frame_xfer_complete_cb(uint_fast8_t control, uint_fast
 
 extern "C" int tud_video_commit_cb(uint_fast8_t control, uint_fast8_t stream,
                                    const video_probe_and_commit_control_t* parameters) {
-  const UsbCamMode* mode = usb_cam_mode(parameters->bFrameIndex);
+  const UsbCamMode* mode = usb_cam_profile_mode(usb_cam_usb_profile(), parameters->bFrameIndex);
   if (control != 0 || stream != 0 || parameters->bFormatIndex != 1 ||
       !usb_cam_valid_interval(mode, parameters->dwFrameInterval)) return VIDEO_ERROR_OUT_OF_RANGE;
   usb_frame_gaps.reset();
-  usb_cam::Config next = usb_cam::mode_config(parameters->bFrameIndex, parameters->dwFrameInterval);
+  usb_cam::Config next = usb_cam::mode_config(parameters->bFrameIndex, parameters->dwFrameInterval, usb_cam_usb_profile());
   next.generation = desired.generation;
   next.xclk_mhz = desired.xclk_mhz;
+  next.pll = desired.pll;
   memcpy(next.settings, desired.settings, sizeof(next.settings));
   if (custom_quality) next.quality = desired.quality;
   if (!usb_cam::config_equal(next, desired)) {
@@ -220,7 +227,11 @@ int main() {
     frame_clock.interval(desired.interval_100ns / 10);
     const uint32_t now = time_us_32();
     retry_configuration(now);
-    if (usb_cam_usb_recovery_required() || (sending && uint32_t(now - sent_at) > 2000000)) {
+    const ReceiverStats identity_rx = receiver_stats();
+    UsbCamProfile next_profile = usb_cam_usb_profile();
+    const bool profile_changed = profile_discovery.observe(identity_rx.sender,
+        identity_rx.frames + identity_rx.status_packets, next_profile, next_profile);
+    if (profile_changed || usb_cam_usb_recovery_required() || (sending && uint32_t(now - sent_at) > 2000000)) {
       // A wedged transfer must not consume a slot forever. Disconnect and fully
       // deinitialize the controller before releasing memory; no speculative free.
       tud_disconnect();
@@ -232,7 +243,19 @@ int main() {
       sending = nullptr;
       usb_frame_gaps.reset();
       ++usb_restarts;
-      sleep_ms(25);
+      if (profile_changed) {
+        // Descriptor storage stays immutable throughout enumeration and streaming.
+        // Only select a different bank after hardware and class DMA are stopped.
+        usb_cam_usb_select_profile(next_profile);
+        const uint32_t generation = desired.generation + 1;
+        desired = usb_cam::Config{};
+        desired.generation = generation;
+        selected_mode = next_profile == USB_CAM_PROFILE_DISCOVERY ? 0 : USB_CAM_DEFAULT_MODE;
+        custom_quality = false;
+        config_retry.new_request(identity_rx.status_packets);
+        receiver_configure(desired);
+      }
+      sleep_ms(profile_changed ? 300 : 25);
       if (!tud_init(0)) panic("USB recovery initialization failed");
       frame_clock.sent(time_us_32());
       continue;

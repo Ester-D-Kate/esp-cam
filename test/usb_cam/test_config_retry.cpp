@@ -76,5 +76,28 @@ int main() {
     assert(!retry.poll(h, 5, desired, 1000000));
     assert(!retry.poll(h, 6, desired, 2000000));
   }
+  ProfileDiscovery discovery;
+  UsbCamProfile next = USB_CAM_PROFILE_DISCOVERY;
+  Header sensor;
+  sensor.sensor_pid = 0x3660;
+  assert(!discovery.observe(sensor, 1, USB_CAM_PROFILE_DISCOVERY, next));
+  assert(!discovery.observe(sensor, 1, USB_CAM_PROFILE_DISCOVERY, next)); // Stale snapshot.
+  assert(discovery.observe(sensor, 2, USB_CAM_PROFILE_DISCOVERY, next));
+  assert(next == USB_CAM_PROFILE_OV3660_LEGACY);
+  sensor.sensor_pid = 0; // Early ESP boot is not evidence of a sensor swap.
+  assert(!discovery.observe(sensor, 3, next, next));
+  sensor.sensor_pid = 0x3660; sensor.capabilities = kSensorProfilesCapability;
+  assert(!discovery.observe(sensor, 4, USB_CAM_PROFILE_OV3660_LEGACY, next));
+  assert(discovery.observe(sensor, 5, USB_CAM_PROFILE_OV3660_LEGACY, next));
+  assert(next == USB_CAM_PROFILE_OV3660);
+  assert(!discovery.observe(sensor, 6, next, next));
+  sensor.sensor_pid = 0x26;
+  assert(!discovery.observe(sensor, 7, USB_CAM_PROFILE_OV3660, next));
+  assert(discovery.observe(sensor, 8, USB_CAM_PROFILE_OV3660, next));
+  assert(next == USB_CAM_PROFILE_OV2640);
+  sensor.sensor_pid = 0x5640;
+  assert(!discovery.observe(sensor, 9, USB_CAM_PROFILE_OV2640, next));
+  assert(discovery.observe(sensor, 10, USB_CAM_PROFILE_OV2640, next));
+  assert(next == USB_CAM_PROFILE_DISCOVERY);
   puts("Configuration retry passed: freshness, bounded attempts, identity, cancellation and clock wrap.");
 }

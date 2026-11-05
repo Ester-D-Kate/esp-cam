@@ -61,6 +61,10 @@ int main() {
   config.width = 2560; config.height = 1920;
   assert(!valid_config(config));
   config = Config{};
+  config.interval_100ns = USB_CAM_INTERVAL(120);
+  assert(valid_config(config)); // Future Pico tuning must not need another ESP flash.
+  config.interval_100ns--;
+  assert(!valid_config(config));
   config.interval_100ns = 0;
   assert(!valid_config(config));
   config = Config{};
@@ -109,6 +113,22 @@ int main() {
   bytes[76] = 15; // VCO 100 MHz is outside the datasheet operating range.
   put32(bytes.data() + 124, crc32(bytes.data(), 124));
   assert(!decode_config(bytes.data(), bytes.size(), decoded));
+  config = Config{};
+  config.pll.multiplier = 15; config.pll.pre_div = 2;
+  assert(valid_config(config)); // VCO 150 MHz lower bound.
+  config.pll.multiplier = 14;
+  assert(!valid_config(config));
+  config.pll.multiplier = 25; config.pll.root_2x = 1; config.pll.sys_div = 3;
+  assert(valid_config(config)); // VCO 500 MHz upper bound, SYS/PCLK within bounds.
+  config.pll.multiplier = 26;
+  assert(!valid_config(config));
+  config = Config{}; config.xclk_mhz = 24;
+  config.pll.multiplier = 27; config.pll.pclk_div = 11;
+  assert(valid_config(config)); // SYSCLK 54 MHz upper bound.
+  config.pll.multiplier = 28;
+  assert(!valid_config(config));
+  config.pll.multiplier = 27; config.pll.pclk_div = 10;
+  assert(!valid_config(config)); // PCLK 10.8 MHz is too high for this capture path.
   assert(usb_cam_profile_for(0, 0) == USB_CAM_PROFILE_DISCOVERY);
   assert(usb_cam_profile_for(0x26, 0) == USB_CAM_PROFILE_OV2640);
   assert(usb_cam_profile_for(0x3660, 0) == USB_CAM_PROFILE_OV3660_LEGACY);

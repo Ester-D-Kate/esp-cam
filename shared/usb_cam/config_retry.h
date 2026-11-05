@@ -1,6 +1,28 @@
 #pragma once
 #include "protocol.h"
 namespace usb_cam {
+// Require two fresh valid observations before changing a USB identity. A stale
+// snapshot or the PID=0 status emitted during ESP startup is not a new sensor.
+class ProfileDiscovery {
+ public:
+  bool observe(const Header& sender, uint32_t packets, UsbCamProfile active, UsbCamProfile& next) {
+    if (packets == last_packets_) return false;
+    last_packets_ = packets;
+    if (!sender.sensor_pid) { observations_ = 0; return false; }
+    const auto candidate = usb_cam_profile_for(sender.sensor_pid, sender.capabilities);
+    if (candidate == active) { observations_ = 0; return false; }
+    if (!observations_ || candidate != pending_) {
+      pending_ = candidate; observations_ = 1; return false;
+    }
+    observations_ = 0;
+    next = candidate;
+    return true;
+  }
+ private:
+  uint32_t last_packets_ = 0;
+  unsigned observations_ = 0;
+  UsbCamProfile pending_ = USB_CAM_PROFILE_DISCOVERY;
+};
 // Retry acknowledged startup, capture, reset and clock failures, with a finite
 // budget per explicit request. Unsupported settings and a dead link stay visible.
 class ConfigRetry {
