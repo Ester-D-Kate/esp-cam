@@ -531,6 +531,71 @@ existing menu still ends at 1600x1200; fitting this sensor does not add USB
 modes automatically. Evidence: `20261106-033606-ov3660-live-obs.json` under
 `~/Desktop/Codex-projects/esp-cam-validation/`. OBS was left in control.
 
+### OV3660 higher-rate feasibility — 2026-11-06
+
+The [OmniVision datasheet, table 2-2](https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/OV3660_datasheet.pdf#page=29)
+does list 3MP/15, 1080p/20, 720p/45, XGA/45, VGA/60 and QVGA/120. These sensor
+transfer rates use specified clocks and cropping/subsampling modes. They are
+not delivered USB-camera rates for this assembly. In
+[Espressif issue 232](https://github.com/espressif/esp32-camera/issues/232), the
+maintainer identifies ESP XCLK/PCLK capture limits; the original reporter saw
+lower OV3660 throughput than OV2640 despite three buffers. Later experimental
+PLL settings reportedly improved FPS by about 50%, without establishing a
+measured 120-FPS mode. This is useful prior work, not a validated preset for
+our current hardware/driver.
+
+Our firmware already disables Wi-Fi/Bluetooth, captures sensor-compressed JPEG,
+and uses two PSRAM buffers with `CAMERA_GRAB_LATEST`. Espressif documents that
+[two or more buffers enable continuous capture](https://github.com/espressif/esp32-camera#important-to-remember);
+three buffers are not an automatic high-FPS switch. The driver also programs
+[mode-dependent PLL, binning and frame timing](https://github.com/espressif/esp32-camera/blob/f0bb429/sensors/ov3660.c).
+The application's requested interval currently paces delivery; it is not an
+arbitrary sensor PLL or readout-rate command.
+
+The wired link has finite limits: JPEG SPI is 8 Mbit/s (at most 1,000,000 B/s
+before headers/gaps), while [RP2040 USB is full speed, 12 Mbit/s](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf#page=384).
+The usual 720 KiB/s firmware budget corresponds to about 24 KiB/frame at 30 FPS,
+16 KiB at 45, 12 KiB at 60 and 6 KiB at 120. These are arithmetic payload
+allowances, not measured modes. UXGA has its separate 64 KiB allowance. A
+50,000-byte JPEG at 45 FPS would require 2.25 MB/s before overhead, beyond the
+current SPI link. More cores or removing Wi-Fi cannot change that wire rate.
+
+Current software boundaries and next experiments:
+
+- VGA is advertised through 30 FPS; 720p/XGA through 15. Pico-only descriptor
+  changes can request higher rates up to the existing 60-FPS protocol limit,
+  but must be validated against actual sensor delivery and JPEG size.
+- The existing experimental QVGA/60 choice can be benchmarked without flashing.
+  VGA/60 and 720p/30 are investigation targets, not promised performance.
+- The installed ESP accepts geometries only through 1600x1200, intervals no
+  faster than 60 FPS, and JPEGs no larger than 64 KiB. 1080p, full 3MP, 120 FPS
+  requests and custom PLL/readout profiles require ESP capability changes as
+  well as Pico updates. They cannot be enabled solely by adding OBS choices.
+- If those capabilities are pursued, prepare one reviewed ESP update exposing
+  bounded sensor-specific timing profiles to the Pico. Subsequent profile
+  tuning should stay on the Pico; verify image geometry, exposure/FOV changes,
+  corruption, gaps and sustained host decode before promoting any new mode.
+
+Live clock probes at 1600x1200/requested 15 FPS, with OBS still in control:
+
+| Trial | XCLK | USB-completed FPS | JPEG quality values | Mean JPEG bytes |
+|---|---:|---:|---|---:|
+| Initial baseline | 20 MHz | 13.80 | 28 | 48,705 |
+| Initial clock change | 24 MHz | 11.07 | 16 | 59,349 |
+| Repeat baseline | 20 MHz | 9.32 | 16 | 60,016 |
+| Repeat clock change | 24 MHz | 10.97 | 16–18 | 59,216 |
+
+Clock changes reapply mode defaults, resetting adaptive JPEG quality. Therefore
+the first comparison is confounded by compression, and the repeat also adapted
+once; neither establishes a stable clock-only speedup or maximum sensor FPS.
+The repeat at 24 MHz discarded one oversized frame. No trial added capture
+errors, invalid SPI packets, receive timeouts or USB restarts. Original 20 MHz
+was restored; adaptive quality history was reset by the clock changes. No
+firmware upload or OBS mode change was made. Evidence in the Desktop validation
+directory: `20261106-034131-ov3660-clock-comparison.json` and
+`20261106-034357-ov3660-clock-repeat.json`. A controlled resolution/FPS sweep
+still requires the test application to have sole camera ownership.
+
 ## Source and design
 
 - [Approved runtime design](docs/usb-camera-runtime-design.md) and

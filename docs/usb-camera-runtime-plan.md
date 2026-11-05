@@ -423,3 +423,31 @@ were zero. Saved evidence: Desktop validation directory,
 `20261106-033606-ov3660-live-obs.json`. This establishes detection and device-side
 streaming for this mode, not all-mode support, host-decoded FPS or long-term
 stability. OBS and the installed firmware were left unchanged.
+
+## OV3660 performance research — 2026-11-06
+
+Kate requested investigation of the datasheet's higher rates. Verified the
+provided datasheet table 2-2, Espressif issues 232/221, driver PLL/readout code,
+continuous-buffer guidance, and RP2040 full-speed USB specification. Results,
+source links, bandwidth arithmetic and current compiled protocol limits are
+recorded in USB_CAMERA.md. Wi-Fi is already off and two JPEG buffers already
+enable continuous capture; neither wireless removal nor a third buffer proves
+the sensor's advertised maxima can reach USB. Existing menus also limit the
+requested rate, separately from sensor readout timing.
+
+Ran bounded Pico-controlled XCLK comparisons while OBS retained the same UXGA/15
+mode. Clock changes reset adaptive quality, confounding the first comparison;
+the repeat still adapted once. Results: 20 MHz/quality28 ~13.80 USB FPS versus
+24 MHz/quality16 ~11.07; repeat 20 MHz/quality16 ~9.32 versus 24 MHz/quality16–18
+~10.97. No capture/invalid/SPI-timeout/USB-restart increments; one oversize
+discard in the repeat 24 MHz window. Restored original 20 MHz, without flashing
+or changing OBS. This is investigation, not acceptance of 24 MHz as a new
+default. Adaptive quality history resets during these operations.
+
+Research conclusion: start with measured VGA/60 and 720p/30 experiments through
+the Pico's existing <=60-FPS contract, retaining actual-rate/error validation.
+Those rates are targets, not capabilities established by this turn. Custom
+OV3660 timing/cropping profiles, 1080p/3MP and 120-FPS requests exceed the
+installed ESP contract and would need a deliberately prepared ESP capability
+update. No such firmware change or upload was made during this feasibility
+investigation. Avoid copying an old issue's PLL recipe as a validated preset.
