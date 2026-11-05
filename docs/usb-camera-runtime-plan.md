@@ -131,6 +131,22 @@ PlatformIO; no dependency upgrade.
   whether the fault is the wire/connector or the ESP input path. All temporary
   probe source was removed and the normal Pico image re-uploaded with verified
   flash. Next physical check: substitute a known-good GP7-to-IO2 connection.
+- Kate identified the return wire on GP6 and moved it to GP7. Configuration was
+  accepted immediately (CRC/token match, OV2640 PID 0x26); VGA USB decoding
+  delivered 122 frames over five seconds, about 25 FPS steady state. The initial
+  nine-mode sweep decoded UXGA/HD/SXGA/XGA at about 12.5 FPS, QQVGA near 30 FPS,
+  and HVGA/VGA near 25 FPS, but three mode changes stopped with initialization
+  error 2. Exact SDK initialization failure cause is not known from that code.
+- Ten generation-only VGA retries (same quality16 and all other settings) each
+  recovered after the first initialization failure. Add Pico-only recovery:
+  matching fresh Status + Init error + attempted generation/token, 250 ms
+  cooldown, at most two retries per changed UVC request or accepted CDC command.
+  Automatic generations and duplicate UVC commits preserve the retry budget;
+  success and mismatched status cancel cooldown. All other errors stay visible.
+  Tests cover stale status, unchanged status count on a successful frame, retry
+  bounds, old identities, unchanged setting values and microsecond clock wrap.
+  Independent review found no blockers. Host suites and all five builds pass;
+  automatic recovery and high-rate mode measurements are the next bench checks.
 
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here

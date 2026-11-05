@@ -6,6 +6,11 @@ namespace usb_cam {
 constexpr size_t kControlSize = 128;
 constexpr uint32_t kMaxJpeg = USB_CAM_BUFFER_BYTES;
 constexpr int16_t kDefaultSetting = -32768;
+// Sensor configuration status codes shared with the Pico's recovery policy.
+enum ConfigError : uint32_t {
+  kConfigInvalid = 1, kConfigInit = 2, kConfigSensor = 3,
+  kConfigGeometry = 4, kConfigQuality = 5, kConfigFrame = 6
+};
 // Stable wire IDs; append new entries without renumbering existing controls.
 #define USB_CAM_SETTINGS(X) \
  X(Brightness, brightness, -2, 2) X(Contrast, contrast, -2, 2) \

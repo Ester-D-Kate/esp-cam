@@ -3,10 +3,6 @@
 #include "usb_cam/configuration.h"
 
 namespace usb_cam {
-enum ConfigError : uint32_t {
-  kConfigInvalid = 1, kConfigInit = 2, kConfigSensor = 3,
-  kConfigGeometry = 4, kConfigQuality = 5, kConfigFrame = 6
-};
 inline uint32_t setting_error(Setting setting) { return 32 + unsigned(setting); }
 inline framesize_t framesize_for(uint16_t w, uint16_t h) {
   struct Size { uint16_t width, height; framesize_t value; };

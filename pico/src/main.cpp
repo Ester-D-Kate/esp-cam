@@ -6,6 +6,7 @@
 #include "receiver.h"
 #include "usb_cam/frame_clock.h"
 #include "usb_cam/commands.h"
+#include "usb_cam/config_retry.h"
 
 extern "C" bool usb_cam_video_owns_buffer(const void* buffer);
 extern "C" bool usb_cam_usb_recovery_required(void);
@@ -24,6 +25,8 @@ unsigned selected_mode = USB_CAM_DEFAULT_MODE;
 uint32_t stale_frames = 0;
 bool custom_quality = false;
 bool report_requested = false;
+usb_cam::ConfigRetry config_retry;
+uint32_t config_retries = 0;
 
 void commands() {
   static usb_cam::LineReader reader;
@@ -39,6 +42,7 @@ void commands() {
     const auto result = reader.overflowed() ? usb_cam::CommandResult::Invalid :
                         usb_cam::apply_command(reader.line(), desired);
     if (result == usb_cam::CommandResult::Changed) {
+      config_retry.new_request(receiver_stats().status_packets);
       if (strncmp(reader.line(), "set quality ", 12) == 0) custom_quality = true;
       if (strcmp(reader.line(), "defaults") == 0) custom_quality = false;
       receiver_configure(desired);
@@ -47,6 +51,17 @@ void commands() {
     const char* reply = result == usb_cam::CommandResult::Invalid ?
         "ERR invalid command or setting\r\n" : "OK desired state accepted; check applied_generation/config_error\r\n";
     if (tud_cdc_write_available() >= strlen(reply)) tud_cdc_write_str(reply);
+  }
+}
+
+void retry_configuration(uint32_t now) {
+  static uint32_t last_check = 0;
+  if (uint32_t(now - last_check) < 10000) return;
+  last_check = now;
+  const ReceiverStats rx = receiver_stats();
+  if (config_retry.poll(rx.sender, rx.status_packets, desired, now)) {
+    ++config_retries;
+    receiver_configure(desired);
   }
 }
 
@@ -94,7 +109,8 @@ void diagnostics() {
       "\"stale_frames\":%lu,\"status_packets\":%lu,\"xclk_mhz\":%u,"
       "\"desired_token\":%lu,\"applied_token\":%lu,"
       "\"control_error\":%lu,\"control_crc_received\":%lu,\"control_crc_calculated\":%lu,"
-      "\"control_prefix\":\"%s\",\"control_spi_hz\":%lu}\r\n",
+      "\"control_prefix\":\"%s\",\"control_spi_hz\":%lu,"
+      "\"config_retries\":%lu,\"config_retry_attempts\":%u}\r\n",
       selected_mode, desired.width, desired.height, unsigned(10000000u / desired.interval_100ns),
       (unsigned long)rx_fps_x10, (unsigned long)usb_fps_x10,
       (unsigned long)rx.frames, (unsigned long)completed, (unsigned long)rx.invalid,
@@ -113,7 +129,7 @@ void diagnostics() {
       (unsigned long)usb_cam::config_token(desired), (unsigned long)rx.sender.config_token,
       (unsigned long)rx.sender.control_error, (unsigned long)rx.sender.control_crc_received,
       (unsigned long)rx.sender.control_crc_calculated, control_prefix,
-      (unsigned long)rx.sender.control_spi_hz);
+      (unsigned long)rx.sender.control_spi_hz, (unsigned long)config_retries, config_retry.attempts());
   // A closed/slow serial monitor must never stall the UVC stream.
   if (count > 0 && size_t(count) < sizeof(line) && tud_cdc_write_available() >= uint32_t(count)) {
     tud_cdc_write(line, uint32_t(count));
@@ -141,6 +157,7 @@ extern "C" int tud_video_commit_cb(uint_fast8_t control, uint_fast8_t stream,
   if (!usb_cam::config_equal(next, desired)) {
     next.generation++;
     desired = next;
+    config_retry.new_request(receiver_stats().status_packets);
     receiver_configure(desired);
   }
   selected_mode = parameters->bFrameIndex;
@@ -161,6 +178,7 @@ int main() {
     commands();
     frame_clock.interval(desired.interval_100ns / 10);
     const uint32_t now = time_us_32();
+    retry_configuration(now);
     if (usb_cam_usb_recovery_required() || (sending && uint32_t(now - sent_at) > 2000000)) {
       // A wedged transfer must not consume a slot forever. Disconnect and fully
       // deinitialize the controller before releasing memory; no speculative free.
