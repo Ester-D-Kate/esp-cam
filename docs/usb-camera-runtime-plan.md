@@ -108,6 +108,18 @@ PlatformIO; no dependency upgrade.
   diagnostic buffer. The reviewed Pico image was uploaded with flash verification
   and successfully read the old ESP's status packets (`invalid=0`); ESP receive
   fields remain zero until its update. The ESP has not been reflashed again yet.
+- Diagnostic commit `d776503` was subsequently uploaded to ESP32 after Kate
+  removed the entire board and seated it in her programmer. Port
+  `/dev/cu.usbserial-140`, 115200 baud, upload completed in 66.37 seconds with
+  every flash-region hash verified. Log:
+  `.pio/usb-cam-research/return-final-esp-upload.log`.
+  ESP application SHA-256:
+  `4afc7f55c86cf1b9b92e7fd882e136a0e5ab8a4ef175163428db97ca9284d971`.
+  Pico UF2 SHA-256:
+  `79d51b74ea2e91827a36ab70f4859dd533bd4075b6d5305303c658bd2767d366`.
+  Both uploads are verified; reassembly and live configuration/video testing
+  are still pending. Future physical instructions must account for this seated
+  programmer: remove the whole ESP board rather than assuming loose UART wires.
 
 Use new defaults `usb_camera` and `zero_camera` with a `pico_camera` variant;
 the tagged checkpoint retains the prior fixed-profile firmware. Continue here

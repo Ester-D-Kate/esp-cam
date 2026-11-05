@@ -211,8 +211,10 @@ trace captured 128 correct return bytes at GP7 with no mismatches; this does not
 prove the bytes arriving at ESP32 GPIO2. Faster output edges and a one-bit-offset
 experiment did not establish a fix, and those experiments were removed.
 **Runtime video remains unverified and no frames are currently delivered.**
-The updated source includes ESP receive diagnostics and the slower control
-exchange; it requires an additional ESP32 upload before bench validation.
+The diagnostic update at `d776503` was uploaded to both boards. The additional
+ESP32 upload on 2026-11-05 completed with flash hash verification through
+`/dev/cu.usbserial-140`. It includes ESP receive diagnostics and the slower
+control exchange; bench validation awaits reassembly after programming.
 The previous 25 FPS VGA result belongs to the checkpoint, not every new resolution.
 
 Hardware acceptance: decode each mode, repeatedly switch large/small sizes,
