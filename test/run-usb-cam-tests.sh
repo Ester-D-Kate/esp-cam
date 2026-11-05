@@ -8,6 +8,10 @@ if [ ! -f "$tinyusb_dir/tusb.h" ]; then
   exit 1
 fi
 "${CC:-clang}" -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -I"$project_dir/pico/src" "$project_dir/test/usb_cam/test_dma_receive.c" \
+  -o "$project_dir/.pio/host-tests/dma-receive-tests"
+"$project_dir/.pio/host-tests/dma-receive-tests"
+"${CC:-clang}" -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
   -I"$project_dir/pico/src" "$project_dir/test/usb_cam/test_iso_restart.c" \
   -o "$project_dir/.pio/host-tests/iso-restart-tests"
 "$project_dir/.pio/host-tests/iso-restart-tests"

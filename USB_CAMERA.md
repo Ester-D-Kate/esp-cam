@@ -31,10 +31,11 @@ affect actual throughput. Read the counters and measure actual host capture.
 `invalid`; it does not send wrongly sized images to the host. Each profile has
 a distinct USB product ID to reduce host format-cache confusion.
 
-The RP2040 has full-speed USB (12 Mbit/s, not 480 Mbit/s). Our 1023-byte
-isochronous endpoint has at most about 1.02 MB/s of JPEG payload bandwidth before
-real-world losses. The chosen ceilings consume at most 0.74 MB/s at target FPS.
-They leave margin but do not prove the camera can produce those rates.
+The RP2040 has full-speed USB (12 Mbit/s, not 480 Mbit/s). Video uses standard
+UVC bulk transfers with 64-byte USB packets and a 2048-byte software staging
+buffer, following GB Interceptor's transport. Bulk scheduling shares bandwidth
+with other USB traffic. The chosen JPEG ceilings consume at most 0.74 MB/s at
+target FPS; they do not prove the camera can produce those rates.
 
 JPEGs are passed through without decoding, resizing or artificial sharpening.
 When a scene produces a JPEG above the ceiling, that frame is counted/discarded
@@ -132,7 +133,8 @@ reset. An ordinary Raspberry Pi Pico can use `pico_vga30` with the same GPIO map
    with the default VGA30 pair. Reconnect signal wires with power off.
 2. Connect the Zero's USB to the computer, then power ESP32. Inspect ESP32 logs
    if the camera fails to start or the Zero reports no received frames.
-3. Open OBS or another UVC application. Select **ESP32 POV Camera**, MJPEG and
+3. Open OBS or another UVC application. Select **ESP32 POV Camera** (shown as
+   **MJPEG Video** in macOS AVFoundation/FFmpeg), MJPEG and
    the dimensions/FPS for the flashed profile. Host/app compatibility still
    needs testing on your machine; an app that insists on YUY2 is not supported.
 4. Open the Zero's diagnostic serial port at 115200. It emits one JSON line per
@@ -151,6 +153,8 @@ Diagnostic fields:
 | `rx_fps_x10`, `usb_fps_x10` | Measured receive / USB completion rate, multiplied by 10 |
 | `rx_frames`, `usb_frames` | Cumulative valid receives / firmware USB completions |
 | `invalid`, `spi_timeouts` | Corrupt, truncated, mismatched or oversized SPI packets / incomplete transactions |
+| `header_errors`, `length_errors`, `payload_errors`, `overflows` | Invalid-packet breakdown: header, total length, JPEG/CRC, receive-buffer overflow |
+| `rx_bytes`, `rx_prefix` | Last SPI transaction's byte count and first 16 bytes as hexadecimal; a valid header starts `504f56310100300001000000` for profile 1 |
 | `replaced` | Valid preview frames skipped to keep latency bounded, including while no app is reading |
 | `seq_gaps`, `sender_resets` | Missing ESP32 application sequence numbers / inferred sequence restart |
 | `submit_errors`, `cancelled`, `usb_restarts` | USB submission failures, cancelled frames, recovery reconnects |
@@ -159,8 +163,8 @@ Diagnostic fields:
 | `max_queue_us` | Largest receive-to-USB-submit wait; **not** end-to-end camera latency |
 | `clk_peri` | Actual Pico peripheral clock; must be at least 96 MHz for 8 MHz slave SPI |
 
-USB completion means the controller completed sending; isochronous USB has no
-per-packet retransmission guarantee. Check recorded host frames too. ESP32 camera
+USB completion means the controller completed sending. Check decoded host frames
+too; controller counters alone do not establish successful display. ESP32 camera
 driver discards before the application gets a frame are not all represented in
 `seq_gaps`; the achieved FPS and visual timestamps are the relevant checks.
 
@@ -196,6 +200,9 @@ reactivation. Its wait is bounded; unsupported early silicon or an abort timeout
 requests a full USB reconnect. The reset helper is exercised against a host
 register model. See [third-party notices](pico/THIRD_PARTY_NOTICES.md) for the
 upstream source and license. Physical close/reopen testing is still required.
+Bulk endpoint reopening also reuses its existing DPRAM allocation and safely
+aborts pending transfers. The initial isochronous build produced a macOS USB
+pipe error during hardware testing; the current build uses bulk UVC instead.
 The USB VID/PIDs are prototype identifiers
 from the TinyUSB example convention, not an assigned product identity.
 
@@ -211,14 +218,15 @@ pio run -d pico -e zero_vga30 -e zero_svga15 -e zero_hd10 -e zero_qvga30 -e pico
 Host tests use AddressSanitizer/UndefinedBehaviorSanitizer and the actual USB
 descriptor source. They cover CRC, corruption/truncation, JPEG bounds, frame
 ownership under slow USB, stale-frame ordering and descriptor limits for every
-profile. They also check ISO abort ordering, timeout recovery requests and the
-early-silicon fallback. Hardware transfer timing and image quality remain
-unverified until the physical test above.
+profile. They also check endpoint abort ordering, timeout recovery requests,
+the early-silicon fallback and DMA byte counting after abort. Short hardware
+capture results appear below; long-duration timing, latency and motion quality
+still need the remaining physical tests above.
 
 Verified locally on 2026-11-05: all five ESP32 environments and all five Pico
 environments built successfully; the USB host tests and existing servo tests
 passed. The USB tests ran with AddressSanitizer and UndefinedBehaviorSanitizer.
-The Pico VGA build uses 82,492 bytes of static RAM; HD uses 193,084 bytes. These
+The current Pico VGA build uses 83,552 bytes of static RAM; HD uses 194,144 bytes. These
 figures do not measure runtime stack usage or camera performance. An independent
 source review identified the ISO restart issue, which was addressed with a
 failing-then-passing regression test and a rebuild of every Pico profile.
@@ -230,5 +238,23 @@ subsequently flashed and verified with the initial VGA30 firmware. The Pico
 enumerated as a UVC camera and CDC diagnostics device at a 125 MHz peripheral
 clock. The revised GP0/GP1/GP2/GP3 VGA30 mapping was also flashed and verified;
 the Pico re-enumerated with working CDC diagnostics. All five Pico profiles
-rebuilt and the USB host tests passed after the remap. The camera-to-Pico link
-still needs testing after wiring.
+rebuilt and the USB host tests passed after the remap. Subsequent wired testing
+and transport fixes are described below.
+
+The first wired test exposed a receive-count bug: RP2040 `CHAN_ABORT` clears
+`TRANS_COUNT` ([datasheet, section 2.5](https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf)).
+The receiver now counts completed bytes using the DMA destination address after
+abort has flushed pending writes. A regression test reproduces counter clearing
+and verifies empty, partial, final-write and overlength cases. With this fix,
+VGA frames arrived over SPI at approximately 24.9-25.0 FPS with zero invalid
+packets and SPI timeouts during the initial sample. This is a short SPI result,
+not a long-soak benchmark. After switching to bulk UVC, macOS AVFoundation/FFmpeg
+successfully decoded 192 VGA frames during an eight-second capture. Steady USB
+completion counters measured approximately 24.9-25.0 FPS with zero invalid
+packets or submission errors during that capture. No footage or audio was saved.
+After fixing TinyUSB's endpoint busy/claim reset, three further five-second
+captures succeeded across close/reopen cycles (122, 121 and 123 decoded frames).
+SPI invalid and timeout counters stayed zero. Closing a stream can cancel an
+in-flight frame and briefly increment submission/cancellation counters; those
+counters did not keep increasing during the subsequent captures. A 30-minute
+moving-scene soak and end-to-end latency measurement remain outstanding.

@@ -2,6 +2,7 @@
 #include "usb_cam/frame_slots.h"
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
+#include "dma_receive.h"
 #include "hardware/spi.h"
 #include "pico/critical_section.h"
 #include "pico/stdlib.h"
@@ -52,12 +53,16 @@ void validate(int slot) {
     assert(validating == slot);  // This single producer validates each arrival.
     (void)validating;
   }
-  const bool valid = usb_cam::decode_header(frame.packet, frame.length, frame.header) &&
-      frame.length == usb_cam::kHeaderSize + frame.header.payload_size &&
+  const bool header_valid = usb_cam::decode_header(frame.packet, frame.length, frame.header);
+  const bool length_valid = header_valid && frame.length == usb_cam::kHeaderSize + frame.header.payload_size;
+  const bool valid = length_valid &&
       usb_cam::validate_payload(frame.header, frame.packet + usb_cam::kHeaderSize, frame.header.payload_size);
   Lock lock;
   if (!valid) {
     ++stats.invalid;
+    if (!header_valid) ++stats.header_errors;
+    else if (!length_valid) ++stats.length_errors;
+    else ++stats.payload_errors;
     slots.release(slot);
     return;
   }
@@ -117,8 +122,9 @@ void receiver_run() {
     }
     const bool timed_out = !gpio_get(kSelectPin);
     spi_get_hw(kSpi)->dmacr = 0;
-    dma_channel_abort(dma);  // No DMA IRQ is enabled (including RP2040-E13).
-    size_t count = kDmaCapacity - dma_channel_hw_addr(dma)->transfer_count;
+    // No DMA IRQ is enabled (including RP2040-E13). Abort clears TRANS_COUNT;
+    // count bytes using the completed destination address instead.
+    size_t count = usb_cam_finish_dma(dma, frame.packet, kDmaCapacity);
     bool overflow = (spi_get_hw(kSpi)->ris & SPI_SSPRIS_RORRIS_BITS) != 0;
     // With CS high no further clocks arrive. Account for any residual FIFO bytes
     // after stopping DMA, with bounded storage and explicit overflow detection.
@@ -130,10 +136,20 @@ void receiver_run() {
     if (spi_is_readable(kSpi) || count > usb_cam::kPacketCapacity) overflow = true;
     frame.length = count;
     frame.received_us = time_us_32();
+    {
+      Lock lock;
+      stats.last_rx_bytes = count;
+      for (size_t i = 0; i < sizeof(stats.last_prefix); ++i) {
+        stats.last_prefix[i] = i < count ? frame.packet[i] : 0;
+      }
+    }
     if (timed_out || overflow) {
       Lock lock;
       if (timed_out) ++stats.timeouts;
-      else ++stats.invalid;
+      else {
+        ++stats.invalid;
+        ++stats.overflows;
+      }
       slots.release(slot);
     } else {
       validate(slot);

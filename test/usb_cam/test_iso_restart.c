@@ -5,7 +5,7 @@
 
 // MMIO model for the reset helper. The production helper itself is compiled
 // unchanged; this model asserts it never clears a buffer before hardware abort.
-struct hw_endpoint { bool active; uint8_t pending; uint8_t next_pid; volatile uint32_t* buffer_control; };
+struct hw_endpoint { bool active; uint8_t pending; uint8_t next_pid; volatile uint32_t* buffer_control; uint8_t ep_addr; };
 struct usb_registers { uint32_t abort, abort_done, buf_status; };
 static struct usb_registers registers, set_registers, clear_registers;
 static struct usb_registers* const usb_hw = &registers;
@@ -14,6 +14,7 @@ static struct usb_registers* const usb_hw_clear = &clear_registers;
 static uint32_t buffer_control;
 static unsigned chip_version, ticks;
 static bool acknowledge;
+static bool endpoint_enabled, software_busy, software_claimed;
 #define USB_BUF_CTRL_AVAIL (1u << 10)
 static unsigned rp2040_chip_version(void) { return chip_version; }
 static uint32_t time_us_32(void) {
@@ -26,6 +27,20 @@ static uint32_t time_us_32(void) {
   return ticks * 100;
 }
 static void hw_endpoint_reset_transfer(struct hw_endpoint* ep) { ep->active = false; }
+static void hw_endpoint_enable(struct hw_endpoint* ep) {
+  assert(!ep->active && !ep->pending && !*ep->buffer_control);
+  endpoint_enabled = true;
+}
+void usbd_edpt_clear_stall(uint8_t rhport, uint8_t address) {
+  assert(rhport == 0 && address == 0x81 && endpoint_enabled);
+  software_busy = false;
+}
+bool usbd_edpt_release(uint8_t rhport, uint8_t address) {
+  assert(rhport == 0 && address == 0x81 && !software_busy);
+  bool was_claimed = software_claimed;
+  software_claimed = false;
+  return was_claimed;
+}
 #include "iso_restart.h"
 
 static struct hw_endpoint setup(unsigned version, bool ack) {
@@ -36,7 +51,10 @@ static struct hw_endpoint setup(unsigned version, bool ack) {
   chip_version = version;
   ticks = 0;
   acknowledge = ack;
-  return (struct hw_endpoint){true, 1, 1, &buffer_control};
+  endpoint_enabled = false;
+  software_busy = true;
+  software_claimed = true;
+  return (struct hw_endpoint){true, 1, 1, &buffer_control, 0x81};
 }
 
 int main(void) {
@@ -60,5 +78,11 @@ int main(void) {
   buffer_control = 0;
   assert(usb_cam_abort_iso(&ep, 4));
   assert(!usb_hw_set->abort);
-  puts("ISO restart tests passed: pending packet, abort ordering, timeout, RP2040-E2.");
+  ep = setup(2, true);
+  assert(usb_cam_reopen_endpoint(&ep, 4));
+  assert(endpoint_enabled && !software_busy && !software_claimed);
+  ep = setup(2, false);
+  assert(!usb_cam_reopen_endpoint(&ep, 4));
+  assert(!endpoint_enabled && software_busy);
+  puts("Endpoint restart tests passed: abort ordering, timeout, RP2040-E2, busy and claimed state.");
 }

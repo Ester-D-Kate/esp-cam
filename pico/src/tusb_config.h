@@ -8,8 +8,10 @@
 #define CFG_TUD_ENDPOINT0_SIZE 64
 #define CFG_TUD_VIDEO 1
 #define CFG_TUD_VIDEO_STREAMING 1
-#define CFG_TUD_VIDEO_STREAMING_EP_BUFSIZE 1023
-#define CFG_TUD_VIDEO_STREAMING_BULK 0
+// Bulk UVC follows the working GB Interceptor transport. The endpoint's USB
+// packet size remains 64 bytes; this is the software payload staging buffer.
+#define CFG_TUD_VIDEO_STREAMING_EP_BUFSIZE 2048
+#define CFG_TUD_VIDEO_STREAMING_BULK 1
 #define CFG_TUD_CDC 1
 #define CFG_TUD_CDC_RX_BUFSIZE 64
 #define CFG_TUD_CDC_TX_BUFSIZE 1024

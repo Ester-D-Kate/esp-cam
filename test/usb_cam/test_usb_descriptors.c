@@ -16,7 +16,7 @@ int main(void) {
   assert(length > 9 && length < 512 && config[4] == 4);
   unsigned interfaces = 0;
   unsigned video_frames = 0;
-  unsigned iso_endpoints = 0;
+  unsigned video_endpoints = 0;
   unsigned interface_class = 0;
   unsigned interface_subclass = 0;
   size_t offset = 0;
@@ -28,6 +28,9 @@ int main(void) {
       if (d[3] == 0) ++interfaces;
       interface_class = d[5];
       interface_subclass = d[6];
+      if (interface_class == TUSB_CLASS_VIDEO && interface_subclass == VIDEO_SUBCLASS_STREAMING) {
+        assert(d[3] == 0 && d[4] == 1);  // Bulk streaming has one endpoint in alt 0.
+      }
     } else if (d[1] == TUSB_DESC_CS_INTERFACE && interface_class == TUSB_CLASS_VIDEO &&
                interface_subclass == VIDEO_SUBCLASS_STREAMING && d[2] == VIDEO_CS_ITF_VS_FRAME_MJPEG) {
       ++video_frames;
@@ -36,13 +39,13 @@ int main(void) {
       assert(le32(d + 17) == USB_CAM_MAX_JPEG);
       assert(le32(d + 21) == USB_CAM_INTERVAL_100NS);
       assert(d[25] == 0 && le32(d + 26) == le32(d + 30));
-    } else if (d[1] == TUSB_DESC_ENDPOINT && (d[3] & 3) == TUSB_XFER_ISOCHRONOUS) {
-      ++iso_endpoints;
-      assert(d[2] == 0x81 && le16(d + 4) == 1023 && d[6] == 1);
+    } else if (d[1] == TUSB_DESC_ENDPOINT && d[2] == 0x81) {
+      ++video_endpoints;
+      assert((d[3] & 3) == TUSB_XFER_BULK && le16(d + 4) == 64 && d[6] == 0);
     }
     offset += d[0];
   }
-  assert(offset == length && interfaces == 4 && video_frames == 1 && iso_endpoints == 1);
+  assert(offset == length && interfaces == 4 && video_frames == 1 && video_endpoints == 1);
   for (unsigned i = 0; i <= 5; ++i) {
     const uint16_t* string = tud_descriptor_string_cb(i, 0x0409);
     assert(string && (string[0] >> 8) == TUSB_DESC_STRING && (string[0] & 255) <= 128);

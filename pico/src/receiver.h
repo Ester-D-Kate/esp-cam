@@ -12,6 +12,10 @@ struct ReceivedFrame {
 struct ReceiverStats {
   uint32_t frames = 0;
   uint32_t invalid = 0;
+  uint32_t header_errors = 0;
+  uint32_t length_errors = 0;
+  uint32_t payload_errors = 0;
+  uint32_t overflows = 0;
   uint32_t timeouts = 0;
   uint32_t replaced = 0;
   uint32_t sequence_gaps = 0;
@@ -19,6 +23,8 @@ struct ReceiverStats {
   uint32_t last_sequence = 0;
   uint32_t max_bytes = 0;
   uint32_t peripheral_hz = 0;
+  uint32_t last_rx_bytes = 0;
+  uint8_t last_prefix[16] = {};
 };
 
 void receiver_init();

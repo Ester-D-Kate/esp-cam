@@ -9,10 +9,11 @@ PlatformIO environment; they are excluded from the USB firmware. Branch:
 `codex/usb-cam`, based on `fe4321f`. Work stays in this repository as explicitly
 requested, overriding the general new-project directory preference.
 
-Both boards have been flashed; Pico UVC/CDC enumeration and diagnostics were
-checked. Camera-to-Pico streaming still needs physical wiring and testing. No
-claim of sustained FPS, zero loss, HD/60 FPS, stabilization or equivalence to
-consumer camera glasses.
+Both boards have been flashed and wired. SPI reception measured approximately
+24.9-25.0 FPS at VGA with no invalid packets in the initial sample. macOS decoded
+192 frames in an eight-second USB capture using bulk UVC. Long-duration FPS,
+latency and motion quality still need measurement. No claim of zero loss,
+HD/60 FPS, stabilization or equivalence to consumer camera glasses.
 
 ## Research and decisions
 
@@ -22,10 +23,12 @@ consumer camera glasses.
   8 MHz, RX DMA, plus a READY wire. Do not overclock either chip.
 * [TinyUSB UVC example](https://github.com/hathach/tinyusb/tree/master/examples/device/video_capture)
   and [video API](https://docs.tinyusb.org/en/latest/reference/class/video.html):
-  MJPEG UVC with a 1023-byte full-speed isochronous endpoint; retain frame memory
-  until completion. Include CDC diagnostics in the same composite USB device.
+  MJPEG UVC; retain frame memory until completion. Include CDC diagnostics in
+  the same composite USB device. The current firmware uses a 64-byte full-speed
+  bulk endpoint and a 2048-byte staging buffer.
 * [GB Interceptor](https://github.com/Staacks/gbinterceptor): RP2040 UVC prior art.
-  Its synthetic Game Boy video does not establish achievable natural-scene FPS.
+  Its bulk UVC transport informed the hardware-tested USB path. Its synthetic
+  Game Boy video does not establish achievable natural-scene FPS.
 * [ArduCAM PICO_SPI_CAM](https://github.com/ArduCAM/PICO_SPI_CAM): SPI camera
   acquisition prior art; requires its host software, not a drop-in ESP32 UVC bridge.
 * [Espressif camera driver](https://github.com/espressif/esp32-camera): keep JPEG
@@ -109,6 +112,13 @@ reactivation. A project-local adapter applies the upstream abort sequence before
 activation, with a bounded wait and full-controller reconnect fallback. This
 also avoids unsafe endpoint abort on B0/B1 silicon (RP2040-E2). The actual helper
 is tested using a register model; hardware reopen/unplug testing remains required.
+
+The initial isochronous build caused a macOS USB pipe error, so the current
+firmware uses bulk UVC. On endpoint reopen, the adapter reuses its DPRAM
+allocation, aborts pending hardware transfers, and resets both TinyUSB busy and
+claimed state. The host test models those flags independently. SPI receive
+length comes from DMA WRITE_ADDR after abort completes: RP2040 CHAN_ABORT clears
+TRANS_COUNT, so reading that counter afterward incorrectly reports a full buffer.
 
 ## Verification
 

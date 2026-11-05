@@ -24,3 +24,15 @@ static bool usb_cam_abort_iso(struct hw_endpoint* ep, uint32_t mask) {
   usb_hw_clear->abort = mask;
   return true;
 }
+
+static bool usb_cam_reopen_endpoint(struct hw_endpoint* ep, uint32_t mask) {
+  if (!usb_cam_abort_iso(ep, mask)) return false;
+  hw_endpoint_enable(ep);
+  // TinyUSB 0.18's usbd_edpt_open does not clear its busy/claimed flags.
+  // Hardware is now quiescent, so reset those flags and the DATA0 PID together.
+  usbd_edpt_clear_stall(0, ep->ep_addr);
+  // clear_stall clears busy but not claimed in TinyUSB 0.18. A cancelled
+  // transfer has no completion event to release the claim for us.
+  (void)usbd_edpt_release(0, ep->ep_addr);
+  return true;
+}

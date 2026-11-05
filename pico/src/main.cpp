@@ -32,14 +32,23 @@ void diagnostics() {
   previous_received = rx.frames;
   last_report = now;
   if (!tud_cdc_connected()) return;
-  char line[768];
+  char prefix[sizeof(rx.last_prefix) * 2 + 1];
+  constexpr char hex[] = "0123456789abcdef";
+  for (size_t i = 0; i < sizeof(rx.last_prefix); ++i) {
+    prefix[2 * i] = hex[rx.last_prefix[i] >> 4];
+    prefix[2 * i + 1] = hex[rx.last_prefix[i] & 15];
+  }
+  prefix[sizeof(prefix) - 1] = '\0';
+  char line[1024];
   const int count = snprintf(line, sizeof(line),
       "{\"profile\":%u,\"width\":%u,\"height\":%u,\"target_fps\":%u,"
       "\"rx_fps_x10\":%lu,\"usb_fps_x10\":%lu,\"rx_frames\":%lu,\"usb_frames\":%lu,"
       "\"invalid\":%lu,\"spi_timeouts\":%lu,\"replaced\":%lu,\"seq_gaps\":%lu,"
       "\"sender_resets\":%lu,\"submit_errors\":%lu,\"cancelled\":%lu,\"usb_restarts\":%lu,"
       "\"sequence\":%lu,\"jpeg_bytes\":%lu,\"max_queue_us\":%lu,\"capture_errors\":%lu,"
-      "\"oversized\":%lu,\"link_timeouts\":%lu,\"quality\":%u,\"clk_peri\":%lu}\r\n",
+      "\"oversized\":%lu,\"link_timeouts\":%lu,\"quality\":%u,\"clk_peri\":%lu,"
+      "\"header_errors\":%lu,\"length_errors\":%lu,\"payload_errors\":%lu,\"overflows\":%lu,"
+      "\"rx_bytes\":%lu,\"rx_prefix\":\"%s\"}\r\n",
       USB_CAM_PROFILE, usb_cam::kProfile.width, usb_cam::kProfile.height, usb_cam::kProfile.fps,
       (unsigned long)rx_fps_x10, (unsigned long)usb_fps_x10,
       (unsigned long)rx.frames, (unsigned long)completed, (unsigned long)rx.invalid,
@@ -48,7 +57,9 @@ void diagnostics() {
       (unsigned long)usb_restarts, (unsigned long)last_sequence, (unsigned long)last_bytes,
       (unsigned long)max_queue_us, (unsigned long)sender.capture_errors,
       (unsigned long)sender.oversized, (unsigned long)sender.link_timeouts, sender.quality,
-      (unsigned long)rx.peripheral_hz);
+      (unsigned long)rx.peripheral_hz, (unsigned long)rx.header_errors,
+      (unsigned long)rx.length_errors, (unsigned long)rx.payload_errors,
+      (unsigned long)rx.overflows, (unsigned long)rx.last_rx_bytes, prefix);
   // A closed/slow serial monitor must never stall the UVC stream.
   if (count > 0 && size_t(count) < sizeof(line) && tud_cdc_write_available() >= uint32_t(count)) {
     tud_cdc_write(line, uint32_t(count));

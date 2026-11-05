@@ -16,7 +16,8 @@ Execute inline; user authorized implementation and delegated routine choices.
    diagnostics. Build Zero profiles and the Pico variant. Host-check descriptors.
 4. Integration: run existing servo tests and legacy build, review changes with a
    fresh reviewer, fix important findings, write build evidence and hardware
-   acceptance instructions in `USB_CAMERA.md`. Keep firmware unflashed for Kate.
+  acceptance instructions in `USB_CAMERA.md`. The original handoff left firmware
+  unflashed; Kate subsequently requested and authorized hardware uploads.
 
 Review focus: DMA/CS edge races; USB buffer lifetime across stop/unplug/reopen;
 profile/dimension mismatch; sender/receiver reboot; boot pin and power conflicts.
@@ -33,6 +34,15 @@ Progress:
   with an upstream-style abort adapter and a failing-then-passing regression test.
 - Both boards were subsequently flashed and verified with VGA30 firmware. Pico
   UVC/CDC enumeration and diagnostics passed. The revised GP0-GP3/SPI0 receiver
-  was also built, flashed and verified, leaving GP8-GP14 unused. Sensor output,
-  sustained FPS, latency, wiring/power and soak tests remain for Kate's hardware
+  was also built, flashed and verified, leaving GP8-GP14 unused. Long-duration
+  FPS, latency, motion quality and soak tests remain for Kate's hardware
   session using the acceptance procedure in `USB_CAMERA.md`.
+- Wired bring-up reproduced and fixed DMA length accounting after CHAN_ABORT.
+  Regression tests cover cleared transfer count and outstanding final writes.
+- macOS isochronous capture failed with a USB pipe error. Bulk UVC, following
+  GB Interceptor, decoded 192 frames in eight seconds at VGA; steady SPI and USB
+  counters were approximately 25 FPS. USB endpoint reopen resets hardware plus
+  both busy and claimed state, with a regression test for cancelled claims.
+- The reviewed reopen fix passed three consecutive five-second decoded captures
+  (122, 121 and 123 frames). SPI invalid/timeouts stayed zero; all five Pico
+  builds and host tests passed. A live preview was started for Kate.
