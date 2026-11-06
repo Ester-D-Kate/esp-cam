@@ -89,6 +89,16 @@ Deploy Pico first and verify the old ESP still streams, then perform one reviewe
 ESP upload. Validate all geometries, high-rate requests, repeated switching,
 close/reopen and long captures before describing any new mode as reliable.
 
+Pico-first compatibility check, 2026-11-06: source `3460611` was uploaded and
+flash-verified on RP2040-Zero, with the previous ESP firmware still installed.
+Three consecutive 20-second decoded captures (VGA30 → UXGA15 → VGA30) delivered
+29.44, 14.83 and 29.41 FPS. Maximum arrival gaps were 52, 85 and 57 ms, with no
+gaps over 250 ms and no new capture, packet, oversized-frame, link-timeout or USB
+restart errors during steady capture. The Pico retained profile 3 / CAFE:4053 and
+the 65,536-byte legacy limit. These short checks establish compatibility, not
+new full-menu/high-rate/QXGA operation or long-term stability. ESP upload remains
+pending; no new sensor readout has been tested on hardware yet.
+
 ## Wiring
 
 GPIO numbers below are board labels, not physical connector positions.
