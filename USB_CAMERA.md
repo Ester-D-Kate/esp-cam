@@ -96,8 +96,11 @@ Three consecutive 20-second decoded captures (VGA30 → UXGA15 → VGA30) delive
 gaps over 250 ms and no new capture, packet, oversized-frame, link-timeout or USB
 restart errors during steady capture. The Pico retained profile 3 / CAFE:4053 and
 the 65,536-byte legacy limit. These short checks establish compatibility, not
-new full-menu/high-rate/QXGA operation or long-term stability. ESP upload remains
-pending; no new sensor readout has been tested on hardware yet.
+new full-menu/high-rate/QXGA operation or long-term stability. The matching ESP
+firmware was subsequently uploaded through PlatformIO on `/dev/cu.usbserial-2140`;
+all flash segments passed hash verification and the application matched the
+reviewed artifact. Physical reconnection to the Pico is pending; no new sensor
+readout has been tested on hardware yet.
 
 ## Wiring
 
