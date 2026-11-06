@@ -171,8 +171,9 @@ then one release when released; gestures are decided by your computer code.
 Both boards need the button firmware once. **Update Pico first, then ESP.** The
 new Pico can stream from the previous ESP, but reports the button unavailable
 until the ESP is updated. New ESP button headers require the new Pico decoder.
-Future PC-side shortcut mappings need no firmware upload. The video sensor
-presets, SPI clocks, JPEG limits and requested frame rates are unchanged.
+Future PC-side shortcut mappings need no firmware upload. SPI clocks, JPEG limits, frame-rate choices and all OV3660 presets are unchanged.
+The OV2640 96×96 preset now uses JPEG quality `4` after quality `12` failed to
+capture small JPEGs on the bench; see the current hardware results below.
 
 The same physical USB device now provides three USB functions:
 
@@ -257,8 +258,9 @@ The SPI button capability is bit `0x4`. It reuses eight diagnostic prefix bytes
 and four formerly reserved header bytes, retaining the 128-byte packet header and
 CRC. The first eight return-prefix bytes remain available for diagnostics.
 Button ACK metadata is excluded from camera configuration tokens and generations.
-This architecture avoids waiting on the button in the video path; **simultaneous
-physical-button/video performance still requires the on-device checks below**.
+This architecture avoids waiting on the button in the video path. The hardware
+results below include actual press/release delivery during video; they are
+measurements under the stated conditions, not a guarantee of zero drops.
 
 ## Validation, history and recovery
 
@@ -287,13 +289,10 @@ IO15→GP1, IO3→GP3 and IO2→GP7. Close other capture apps and inspect CDC co
 The USB branch excludes Wi-Fi/SD recording. Use `main` and its wiring instructions
 for the single-board recording build.
 
-Button validation currently includes host debounce/queue/CRC/ACK tests, composite
-HID/UVC descriptor tests, actual HID-service failure paths and reader reconnect
-checks. These do not establish physical switch behavior or simultaneous video
-FPS. After both uploads, test presses, releases, holds and rapid double/triple
-presses with OBS active; compare high-rate and high-resolution captures with HID
-reading and unread. Existing camera-only measurements in `USB_CAMERA.md` remain
-baseline evidence, not measurements of the newly added physical button path.
+Button validation includes host debounce/queue/CRC/ACK tests, composite HID/UVC
+descriptor tests, actual HID-service failure paths, reader reconnect checks and
+the physical tests below. Existing camera-only measurements in `USB_CAMERA.md`
+remain preserved baseline evidence.
 
 ### Composite Pico compatibility check — 2026-11-06
 
@@ -319,6 +318,82 @@ can still run between capture sessions. Scene/exposure affect FPS; these figures
 do not establish a full-resolution improvement over the earlier baseline.
 
 This verifies composite-Pico compatibility and HID control traffic alongside
-video. **Physical press/release delivery and active-button video timing remain
-pending the ESP upload.** OV3660 presets are unchanged; it was not attached for
+video. At that compatibility-test stage, physical press/release delivery remained
+pending the ESP upload; the paired-firmware results below supersede that status. OV3660 presets are unchanged; it was not attached for
 this check. Do not treat this table as a new OV3660 hardware measurement.
+
+### Paired firmware and physical button — 2026-11-06
+
+Both boards are uploaded and flash-verified. ESP application SHA-256 begins
+`605e601478b0`; the Pico `zero_camera_uart` image after the 96×96 adjustment begins
+`3ae2b83d5b12` (source `5e119c8`). The ESP required one upload for this feature;
+the later quality adjustment was delivered entirely through the Pico.
+
+- First physical test: **14 consecutive edges / seven press-release pairs**,
+  including a 4.615-second hold and double/triple presses, with no HID loss or
+  duplicate edges while full-resolution capture was active.
+- Final controlled repeat: **10 consecutive edges / five pairs**. Two pairs
+  arrived during 800×600 capture and two during 1024×768; the middle pair arrived
+  between those capture sessions. Both active captures had zero new SPI/capture
+  errors, sequence gaps, replacement frames or USB restarts. All ten edges were
+  retained across the deliberate mode transition.
+- All **14 OV2640 sizes plus a return to VGA** decoded with the final Pico preset.
+  Each run lasted 10 seconds, with the first three seconds excluded from steady
+  timing. FFmpeg/AVFoundation used UYVY and disabled late-frame dropping.
+
+| Resolution / requested FPS | Measured FPS |
+|---|---:|
+| 96x96 / 60 | 57.33 |
+| 160x120 / 60 | 57.25 |
+| 176x144 / 60 | 57.08 |
+| 240x176 / 60 | 57.48 |
+| 240x240 / 60 | 56.18 |
+| 320x240 / 60 | 57.48 |
+| 400x296 / 60 | 58.14 |
+| 480x320 / 30 | 29.41 |
+| 640x480 / 30 | 29.41 |
+| 800x600 / 30 | 29.33 |
+| 1024x768 / 15 | 14.94 |
+| 1280x720 / 15 | 14.90 |
+| 1280x1024 / 15 | 14.88 |
+| 1600x1200 / 15 | 10.00 |
+| 640x480 / 30 | 29.37 |
+
+Every final sweep run had zero steady-state increases in invalid SPI packets,
+capture errors, SPI/link timeouts, frame sequence gaps, frame replacement or USB
+restarts. No decoded-frame gap exceeded 250 ms; the largest was 231.6 ms.
+
+The earlier paired-firmware run did expose intermittent SPI failures: four
+invalid packets and one receive timeout in UXGA, with two gaps around 0.3 seconds;
+VGA later had three invalid packets and one timeout. The cause was not established.
+Two full-resolution repeats then ran cleanly at about 10 FPS: 60 seconds with
+HID closed (maximum gap 163 ms), and 90 seconds with HID open (123 ms). The final
+controlled press test and full menu sweep were also clean. These observations
+support simultaneous use, but do not establish that every intermittent link
+fault is eliminated or caused by the button. Keep these failed runs in the record.
+
+The 96×96 quality-12 preset separately timed out twice; changing only quality to
+`4` restored capture without an ESP upload. This is a tested preset workaround,
+not a general fix for all small-JPEG scenes. Similar quality-sensitive 96×96
+failures are reported in [Espressif issue #436](https://github.com/espressif/esp32-camera/issues/436).
+A comparison of **353 serialized mode/FPS configurations** against the preserved
+baseline found changes only in the nine intervals of OV2640's 96×96 mode.
+Every OV3660 configuration remained byte-identical; OV3660 was not attached for
+these new physical-button tests.
+
+A separate 60-second full-resolution run delivered about 10 FPS with no new SPI,
+capture, sequence-gap or USB-restart errors, but FFmpeg logged one 360 ms frame
+arrival gap. That gap's source timestamp advanced only 113 ms; the device's
+largest measured USB submission gap was 116 ms. This points to a host-side
+scheduling/decoding delay rather than a matching device-side streaming pause,
+but it still limits any claim of completely pause-free display on the computer.
+
+A coordinated test opened, requested fresh state from, and closed the HID reader
+**20 times during seconds 20.1–26.2 of an active 60-second UXGA capture**.
+All sessions returned a fresh released state. Video remained at 10.00 FPS,
+with no new device-side capture/SPI errors, frame sequence gaps, replacement frames
+or USB restarts; configuration generation and camera-start counters did not change.
+The device's maximum USB submission gap was 114 ms. FFmpeg logged one separate
+350 ms arrival gap at second 29.0, after the reconnect batch, while its source
+timestamps advanced by 90 ms. This again distinguishes host arrival jitter from
+a matching device-side frame interruption. No further ESP upload was required.

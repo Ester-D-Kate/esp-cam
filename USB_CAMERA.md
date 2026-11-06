@@ -1,10 +1,14 @@
 # ESP32-CAM + RP2040-Zero USB camera
 
 On `codex/usb-cam-button`, the same video firmware also exposes a raw HID button.
+The [current README](README.md#paired-firmware-and-physical-button--2026-11-06)
+records the paired-firmware tests and the OV2640-only 96×96 quality adjustment.
 See [this branch’s README](README.md#programmable-button-on-the-computer) for GPIO12,
 press/release reports and upload order. The `405x` identities, artifact hashes and
 measurements below describe the preserved camera-only baseline; the HID composite
-uses `406x` identities. Sensor modes and timing presets are unchanged.
+uses `406x` identities. All OV3660 presets and the timing presets are unchanged;
+the button branch additionally adjusts OV2640 96×96 JPEG quality as documented
+in its current README.
 
 The current firmware exposes one MJPEG USB camera with resolution/FPS selection
 in OBS and other UVC applications. The Pico sends the selected mode and sensor
