@@ -13,6 +13,7 @@ recording button are disabled because the servo signals occupy SD pins.
 | [`check-1`](https://github.com/Ester-D-Kate/esp-cam/tree/check-1) | Historical backup and archived helper-board experiments |
 | [`codex/mqtt-servos`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/mqtt-servos) | This wireless camera + MQTT servo build |
 | [`codex/usb-cam`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam) | ESP32 + RP2040 USB webcam; different firmware and wiring |
+| [`codex/usb-cam-button`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam-button) | USB camera plus raw GPIO12 press/release HID; use its own README |
 
 Use each branch's own README. The root `src` is active; the backup directory is
 reference material. No RP2040 is used by this branch.
