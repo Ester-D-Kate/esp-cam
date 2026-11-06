@@ -11,6 +11,7 @@ RP2040 USB camera. Preserve its source history when comparing experiments.
 | [`check-1`](https://github.com/Ester-D-Kate/esp-cam/tree/check-1) | This historical backup |
 | [`codex/mqtt-servos`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/mqtt-servos) | Wireless camera with MQTT X/Y servos |
 | [`codex/usb-cam`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam) | ESP32 SPI → RP2040 USB webcam; use its README for USB setup |
+| [`codex/usb-cam-button`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam-button) | USB camera plus raw GPIO12 press/release HID; use its own README |
 
 ## Select the source before building
 
