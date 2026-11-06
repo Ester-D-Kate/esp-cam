@@ -13,6 +13,7 @@ button and optional MPU6050 telemetry. It is not the RP2040 USB-camera build.
 | [`check-1`](https://github.com/Ester-D-Kate/esp-cam/tree/check-1) | Historical sources and archived ESP8266 helper experiment |
 | [`codex/mqtt-servos`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/mqtt-servos) | Wireless camera plus MQTT servos; SD/button disabled |
 | [`codex/usb-cam`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam) | ESP32 SPI → RP2040 UVC USB webcam, with its own wiring and uploads |
+| [`codex/usb-cam-button`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam-button) | USB camera plus raw GPIO12 press/release HID; use its own README |
 
 Each branch has its own README. Do not mix pin assignments or flash targets.
 The backup directory is retained for reference; root PlatformIO builds only `src`.
