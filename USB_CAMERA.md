@@ -12,9 +12,9 @@ Mac and passed three close/reopen captures. See the
 [historical guide](docs/usb-camera-first-working.md) for those exact artifacts
 and measurements. Runtime mode hardware results are recorded below as tested.
 
-## Full sensor menus — implementation awaiting hardware validation
+## Full sensor menus — OV3660 hardware validated, OV2640 recheck pending
 
-The new source adds 14 standard JPEG sizes for OV2640 and 16 for OV3660.
+The source exposes 14 standard JPEG sizes for OV2640 and 16 for OV3660.
 Sensor detection selects the menu automatically; swapping either supported sensor
 with power off does not require different firmware. Full menus require the new
 ESP capability bit `0x2`. An older ESP keeps its previous menu and 64 KiB limit.
@@ -39,7 +39,7 @@ USB identities are `CAFE:4054` (OV2640 full) and `CAFE:4055` (OV3660 full).
 | 1920×1080 | — | 20 |
 | 2048×1536 | — | 15 |
 
-**These are candidate requested rates, not measured USB delivery.** For each
+**These are requested rates, not guaranteed USB delivery.** For each
 maximum, the menu includes lower rates from 120, 90, 60, 50, 45, 30, 25, 20,
 15, 10, 5, at or below that mode's maximum (20-FPS modes offer 20/15/10/5;
 15-FPS modes offer 15/10/5). Defaults remain conservative. QXGA defaults to 5.
@@ -50,19 +50,21 @@ The OV3660 faster modes use bounded crop/subsampling/timing presets, rather than
 only asking the old scaled readout to send more frames. This changes field of
 view. Crops preserve aspect ratio, and exposure is bounded by the selected frame
 period. Low light can therefore make high-rate images darker or noisier. Actual
-FPS, image quality and successful operation of these new presets still require
-hardware measurements. The datasheet lists sensor limits, not this complete
+FPS and image quality depend on scene detail, exposure and the receiving app.
+The OV3660 measurements below validate the tested bench conditions. The
+datasheet lists sensor limits, not this complete
 ESP32/SPI/full-speed-USB pipeline's limits.
 
 Primary references: [OV3660 datasheet, table 2-2 and timing/exposure registers](https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/OV3660_datasheet.pdf),
 [OV2640 datasheet](https://dl.sipeed.com/MAIX/HDK/Chip_DS/OV2640-DATASHEET.pdf),
 and [Espressif sensor drivers](https://github.com/espressif/esp32-camera/tree/master/sensors).
-The measurements below belong to the preserved firmware, **not** these new
-fast presets or the two-buffer implementation.
+The current results immediately below use the new fast presets and two buffers.
+Later historical sections retain measurements from earlier firmware.
 
 Full profiles allow two 112 KiB JPEG slots (old profiles remain capped at 64 KiB).
 The UART build uses 243,372 of 262,144 bytes of RAM at link time; stack/heap runtime
-headroom still needs soak testing. All full-profile modes allow the entire slot
+headroom has not been instrumented. The high-resolution soak checks below passed,
+but do not establish worst-case stack usage. All full-profile modes allow the entire slot
 and may deliver below the requested rate; legacy profiles preserve their earlier
 720 KiB/s estimates and UXGA/FHD exceptions. A hardware test of HD45 showed that
 its 16 KiB estimate rejected every JPEG even at quality 50. The Pico now requests
@@ -108,8 +110,112 @@ the 65,536-byte legacy limit. These short checks establish compatibility, not
 new full-menu/high-rate/QXGA operation or long-term stability. The matching ESP
 firmware was subsequently uploaded through PlatformIO on `/dev/cu.usbserial-2140`;
 all flash segments passed hash verification and the application matched the
-reviewed artifact. Physical reconnection to the Pico is pending; no new sensor
-readout has been tested on hardware yet.
+reviewed artifact. Kate then reconnected the assembly with OV3660 fitted; the
+following checks validate that deployment and the subsequent Pico-only fixes.
+
+### Current OV3660 results — 2026-11-06
+
+Installed ESP source: `3460611`; installed Pico source: `6b660ce` (`zero_camera_uart`).
+The ESP was uploaded once for this upgrade. Both corrections discovered during
+hardware testing were applied through Pico updates: allowing the full JPEG slot
+at every requested rate, and replacing the failing fast XGA binned readout with
+the measured native crop. Sensor PID `0x3660`, capability bits `0x3`, matching
+configuration generations/tokens and zero configuration error were confirmed.
+macOS AVFoundation enumerated all 16 sizes and their requested rate choices as
+**OV3660 Full MJPEG Video**. This confirms the advertised UVC menu; the OBS
+properties dialog itself was not exercised during this exclusive capture test.
+
+Each maximum-rate request below decoded for ten seconds using FFmpeg/AVFoundation
+with UYVY output and late-frame dropping disabled. Every decoded frame had the
+requested dimensions. No steady frame-arrival gap exceeded 250 ms, and capture,
+packet, oversized-frame, SPI/link-timeout and USB-restart counters had zero new
+increments during steady capture. A final VGA30 return also passed at 29.46 FPS.
+
+| Resolution | Requested FPS | FFmpeg decoded FPS |
+|---|---:|---:|
+| 96×96 | 120 | 78.03 |
+| 160×120 | 120 | 76.12 |
+| 176×144 | 120 | 77.20 |
+| 240×176 | 120 | 78.61 |
+| 240×240 | 120 | 78.12 |
+| 320×240 | 120 | 74.79 |
+| 400×296 | 60 | 57.41 |
+| 480×320 | 60 | 58.33 |
+| 640×480 | 60 | 56.86 |
+| 800×600 | 45 | 40.60 |
+| 1024×768 | 45 | 29.11 |
+| 1280×720 | 45 | 28.81 |
+| 1280×1024 | 15 | 14.56 |
+| 1600×1200 | 15 | 14.83 |
+| 1920×1080 | 20 | 13.19 |
+| 2048×1536 | 15 | 9.42 |
+
+A second, minimal native AVFoundation receiver counted decoded pixel buffers
+without copying or saving their pixels. It confirmed dimensions, increasing
+presentation timestamps, the applied mode, and zero reported dropped callbacks:
+
+| Resolution / requested FPS | Native decoded FPS | Steady measurement |
+|---|---:|---:|
+| 96×96 / 120 | 111.18 | 15 seconds |
+| 160×120 / 120 | 111.15 | 15 seconds |
+| 320×240 / 120 | 89.93 | 20 seconds |
+| 640×480 / 60 | 57.97 | 20 seconds |
+
+No native run had a steady gap over 250 ms or new measured capture, packet,
+oversize, USB-restart or SPI-timeout errors. The small-mode native results show
+that the FFmpeg path did not consume every frame delivered by this camera.
+Different scenes/JPEG sizes also affect throughput: these sequential captures
+are not a controlled comparison between applications. USB completion counters
+alone are not decoded-FPS evidence. **Sustained 120 FPS has not been achieved.**
+
+Longer high-resolution checks on the final firmware:
+
+| Resolution / requested FPS | Duration | Decoded FPS | Largest steady gap |
+|---|---:|---:|---:|
+| 1600×1200 / 15 | 90 seconds | 14.81 | 180 ms |
+| 2048×1536 / 15 | 90 seconds | 9.88 | 142 ms |
+
+Both completed with no gap over 250 ms and no new steady capture/transport errors.
+The earlier high-resolution freeze did not recur in these checks. Lifetime
+counters retain earlier deliberate failed trials; some open/close transitions
+also triggered automatic USB recovery. These results describe active streaming,
+not a claim that transitions are instantaneous or that no frame can ever drop.
+The ESP camera driver remained initialized once throughout testing.
+The final defaults-restoration check decoded VGA60 at 55.72 FPS for ten seconds,
+with no steady new errors. After the capture app closed, USB recovered and the
+host selected HD30; the idle camera confirmed that selection with matching
+generations/tokens, quality 16 and no configuration error. All test applications
+and serial readers were closed. Select the desired mode when opening OBS.
+
+For motion, start with VGA/60 (about 58 FPS); SVGA/45 traded some motion smoothness
+for detail (about 41–43 FPS). Smaller modes reach higher rates at lower detail.
+Fast readout presets crop the field of view; normal-rate presets retain a wider
+view. Full 3 MP is usable at about 10 FPS in this scene. Increasing compression
+to quality parameter 36 gave XGA 32.80 and HD 29.96 FPS, but FHD/3 MP barely
+changed. The original quality defaults were restored rather than sacrificing
+image quality for those modest gains. `set quality 36` remains an optional
+Pico-side control; `defaults` clears that override.
+
+These are bench measurements, not moving-POV, low-light, thermal endurance or
+end-to-end latency certification. Single PNG samples at VGA60, SVGA45 and QXGA15
+had the requested geometry and no obvious tearing or corrupt blocks, but the
+bench view is visibly soft. Optical focus, resolved detail and moving-scene
+quality still need checking; a sharply detailed scene can increase JPEG sizes
+and lower FPS. Samples are saved locally as `full-sample-<width>x<height>.png`.
+The full 14-mode OV2640 menu and automatic
+sensor-swap behavior still need physical verification with that sensor fitted.
+Its earlier nine-mode results below belong to their recorded firmware. A sensor
+swap requires power off and restarting both boards, but no programmer or firmware
+change. No additional ESP upload is needed for the current menu or its presets.
+
+Local evidence: `~/Desktop/Codex-projects/esp-cam-validation/` contains
+`full-host-formats.log`, `full-final-matrix-summary.json`, `full-final-soak.log`,
+`full-native-capture-locked.log`, `full-native-small.log`, timestamped raw JSON,
+and `full-quality36.log`. Earlier native harness attempts that failed geometry
+validation are excluded. Final firmware artifacts are `esp-full-modes-reviewed.bin`
+(SHA256 `449ea97d3f093059341d796f29c17e3efe7bc33b7cced9bb45dd322ee34c2da4`)
+and `pico-full-native.uf2`
+(SHA256 `d69541dac23d619311fd42c5ab3c1fe01c9c8c834b6a941316a926ed03e93c36`).
 
 ## Wiring
 
@@ -204,10 +310,11 @@ menu and measured results are in the sensor-profile section below.
 
 These rates are requests, not guaranteed measured output. Sensor exposure,
 scene detail, JPEG compression, SPI and full-speed USB constrain delivery.
-The `zero_camera_fast` experiment additionally offers 60 FPS at 160x120 and
-320x240, without changing ESP firmware. Do not treat it as a validated 60 FPS
-camera. The standard build omits that experimental option; the diagnostic build
-also includes it. See the hardware measurements below for delivered rates.
+In that preserved version, the `zero_camera_fast` experiment additionally offers
+60 FPS at 160x120 and 320x240, without changing ESP firmware. Do not treat it as a
+validated 60 FPS camera. That version's standard build omits the experimental
+option; its diagnostic build also includes it. See the hardware measurements
+below for delivered rates.
 
 For the tested OV2640, these are practical starting points. Measurements used
 requested XCLK 24 MHz, selected with `set xclk_mhz 24` on Pico CDC. That setting
@@ -268,7 +375,7 @@ across power cycles is needed; ESP firmware stays the same.
 | Setting | Accepted values |
 |---|---|
 | `quality` | 0–50 (lower is better; actual compression may rise to meet budget) |
-| `xclk_mhz` | 10, 16, 20, 24; default 20; requires a compatible PLL combination when overridden |
+| `xclk_mhz` | 10, 16, 20, 24; default 24 for full OV2640, 20 otherwise; requires a compatible PLL combination when overridden |
 | `brightness`, `contrast`, `saturation`, `sharpness`, `ae_level` | -2–2 |
 | `denoise` | 0–8, only if supported by the attached sensor |
 | `hmirror`, `vflip`, `aec`, `aec2`, `agc`, `awb`, `awb_gain` | 0 or 1 |
@@ -292,8 +399,9 @@ geometry is received. Controls are based on Espressif's sensor callbacks, as in
 [CameraWebServer](https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/Camera/CameraWebServer/app_httpd.cpp).
 They are not exposed in every application's native exposure dialog in this version.
 
-The revised ESP controller allocates UXGA capture buffers once. Resolution and
-quality changes use sensor callbacks while the camera peripheral remains running.
+The revised ESP controller allocates capture buffers once at the detected sensor's
+maximum supported JPEG geometry. Resolution and quality changes use sensor
+callbacks while the camera peripheral remains running.
 Repeated identical settings and FPS-only changes do not restart the sensor.
 Changing optional controls (including restoring `default`) or recovering from a
 failed operation resets the sensor's registers and reapplies the requested state,
@@ -359,8 +467,8 @@ pio run -e usb_camera -e esp32cam
 pio run -d pico -e zero_camera -e pico_camera -e zero_camera_fast -e zero_camera_uart
 ```
 
-Builds/tests passed during development on 2026-11-05. Pico uses about 208 KiB of
-static RAM; that does not measure runtime stack headroom. The earlier measurements
+Historical builds/tests passed during development on 2026-11-05. That Pico version
+used about 208 KiB of static RAM; that does not measure runtime stack headroom. The earlier measurements
 used ESP diagnostic commit `d776503`. Moving the return wire from GP6
 to the intended GP7 resolved configuration reception: CRCs/tokens match and the
 OV2640 sensor is detected. The SD socket is empty. The detailed investigation and
@@ -391,7 +499,7 @@ or zero-drop guarantee.
 The current source keeps the driver initialized across configuration changes and
 reports capture timeouts promptly. Recovery now covers errors 2, 6, 7 and 8 with
 the same two-attempt limit; unsupported controls are not retried. Host tests and
-both ESP/four Pico builds pass. **The ESP runs lifecycle revision `4735f12`.**
+both ESP/four Pico builds passed. **This checkpoint used lifecycle revision `4735f12`.**
 Pico revision `e7ea38d` added passive SPI pin levels; the subsequent UXGA and bulk
 termination repair is recorded below. The uploads were verified. The attached
 sensor for these checks was OV2640; the later OV3660 check is recorded below.
