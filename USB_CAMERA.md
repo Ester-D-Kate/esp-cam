@@ -12,7 +12,7 @@ Mac and passed three close/reopen captures. See the
 [historical guide](docs/usb-camera-first-working.md) for those exact artifacts
 and measurements. Runtime mode hardware results are recorded below as tested.
 
-## Full sensor menus — OV3660 hardware validated, OV2640 recheck pending
+## Full sensor menus — both sensors checked on hardware
 
 The source exposes 14 standard JPEG sizes for OV2640 and 16 for OV3660.
 Sensor detection selects the menu automatically; swapping either supported sensor
@@ -203,7 +203,7 @@ bench view is visibly soft. Optical focus, resolved detail and moving-scene
 quality still need checking; a sharply detailed scene can increase JPEG sizes
 and lower FPS. Samples are saved locally as `full-sample-<width>x<height>.png`.
 The full 14-mode OV2640 menu and automatic
-sensor-swap behavior still need physical verification with that sensor fitted.
+sensor-swap behavior were subsequently checked as recorded below.
 Its earlier nine-mode results below belong to their recorded firmware. A sensor
 swap requires power off and restarting both boards, but no programmer or firmware
 change. No additional ESP upload is needed for the current menu or its presets.
@@ -216,6 +216,47 @@ validation are excluded. Final firmware artifacts are `esp-full-modes-reviewed.b
 (SHA256 `449ea97d3f093059341d796f29c17e3efe7bc33b7cced9bb45dd322ee34c2da4`)
 and `pico-full-native.uf2`
 (SHA256 `d69541dac23d619311fd42c5ab3c1fe01c9c8c834b6a941316a926ed03e93c36`).
+
+
+### Full OV2640 hardware check — 2026-11-06
+
+After a powered-off sensor swap, the same ESP/Pico binaries detected PID0x26,
+selected profile4/CAFE:4054 and the OV2640 full menu automatically. No firmware
+settings or OV3660 readout presets were changed. Each of the 14 geometries
+decoded for ten seconds at its highest requested rate:
+
+| Resolution | Requested FPS | Decoded FPS |
+|---|---:|---:|
+| 96x96 | 60 | 58.58 |
+| 160x120 | 60 | 57.64 |
+| 176x144 | 60 | 58.26 |
+| 240x176 | 60 | 57.94 |
+| 240x240 | 60 | 57.85 |
+| 320x240 | 60 | 58.68 |
+| 400x296 | 60 | 58.19 |
+| 480x320 | 30 | 28.98 |
+| 640x480 | 30 | 29.46 |
+| 800x600 | 30 | 23.00 |
+| 1024x768 | 15 | 14.92 |
+| 1280x720 | 15 | 14.86 |
+| 1280x1024 | 15 | 14.72 |
+| 1600x1200 | 15 | 10.01 |
+
+All 14 captures had no steady arrival gap over250ms. One SPI packet with invalid
+length was rejected during240x240/60; the stream continued. A separate20-second
+repeat of that mode delivered58.31FPS without new capture/packet/oversize/SPI
+errors. Full1600x1200/15 then ran90seconds at10.00FPS, maximum gap139.2ms, with no
+new capture/packet/oversize/SPI/link errors or USB restart. The initial return to
+VGA30 passed at29.35FPS. A later20-second VGA follow-up was invalidated when the
+host selectedHD15 at18.37seconds; its441ms transition gap is not counted as a
+successful steady-mode test. OBS was not running when checked afterward; the
+source of that host selection was not established.
+
+These checks establish both menus on their physical sensors, not zero drops or
+POV performance in every scene. Current OV2640 high-resolution delivery is lower
+than its requested ceiling. Logs and raw JSON: `ov2640-full-baseline.log`,
+`ov2640-full-soak.log`, `ov2640-baseline-recheck.log` in the local validation folder.
+This is the unmodified camera baseline, before the generic HID button feature.
 
 ## Wiring
 

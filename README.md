@@ -138,7 +138,8 @@ light. Faster OV3660 presets crop the field of view.
 Measured OV3660 examples: native macOS capture reached about 111 FPS at 160×120,
 90 at 320×240 and 58 at 640×480. FFmpeg measured about 41 at 800×600, 29 at
 1280×720, 14.8 at 1600×1200 and 9.9 at 2048×1536. Sustained 120 FPS has not been
-achieved. The full 14-mode OV2640 profile still needs physical verification.
+achieved. All 14 OV2640 sizes were subsequently decoded on hardware, including a 90-second
+full-resolution check at about 10 FPS.
 See [all measurements, their conditions and limits](USB_CAMERA.md#current-ov3660-results--2026-11-06).
 
 The existing USB **Camera Diagnostics** serial port also accepts:
