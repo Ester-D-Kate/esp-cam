@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include "usb_cam/protocol.h"
+#include "usb_cam/button_hid.h"
 
 struct ReceivedFrame {
   alignas(4) uint8_t packet[usb_cam::kPacketCapacity + 1];  // Extra-byte overrun detection.
@@ -35,3 +36,9 @@ ReceivedFrame* receiver_take_latest();
 void receiver_release(ReceivedFrame* frame);
 ReceiverStats receiver_stats();
 void receiver_configure(const usb_cam::Config& config);
+
+bool receiver_button_peek(usb_cam::ButtonReport& report);
+void receiver_button_commit(const usb_cam::ButtonReport& report);
+usb_cam::ButtonReport receiver_button_snapshot();
+void receiver_button_resync();
+void receiver_button_expire(uint32_t now_ms);

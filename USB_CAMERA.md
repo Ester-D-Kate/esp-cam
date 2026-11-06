@@ -1,5 +1,11 @@
 # ESP32-CAM + RP2040-Zero USB camera
 
+On `codex/usb-cam-button`, the same video firmware also exposes a raw HID button.
+See [this branch’s README](README.md#programmable-button-on-the-computer) for GPIO12,
+press/release reports and upload order. The `405x` identities, artifact hashes and
+measurements below describe the preserved camera-only baseline; the HID composite
+uses `406x` identities. Sensor modes and timing presets are unchanged.
+
 The current firmware exposes one MJPEG USB camera with resolution/FPS selection
 in OBS and other UVC applications. The Pico sends the selected mode and sensor
 settings back to the ESP32 over SPI. Changing resolution or recurring settings
@@ -220,8 +226,8 @@ and `pico-full-native.uf2`
 
 ### Full OV2640 hardware check — 2026-11-06
 
-After a powered-off sensor swap, the same ESP/Pico binaries detected PID0x26,
-selected profile4/CAFE:4054 and the OV2640 full menu automatically. No firmware
+After a powered-off sensor swap, the same ESP/Pico binaries detected PID 0x26,
+selected profile 4 / CAFE:4054 and the OV2640 full menu automatically. No firmware
 settings or OV3660 readout presets were changed. Each of the 14 geometries
 decoded for ten seconds at its highest requested rate:
 
@@ -242,13 +248,13 @@ decoded for ten seconds at its highest requested rate:
 | 1280x1024 | 15 | 14.72 |
 | 1600x1200 | 15 | 10.01 |
 
-All 14 captures had no steady arrival gap over250ms. One SPI packet with invalid
-length was rejected during240x240/60; the stream continued. A separate20-second
-repeat of that mode delivered58.31FPS without new capture/packet/oversize/SPI
-errors. Full1600x1200/15 then ran90seconds at10.00FPS, maximum gap139.2ms, with no
+All 14 captures had no steady arrival gap over 250 ms. One SPI packet with invalid
+length was rejected during 240x240/60; the stream continued. A separate 20-second
+repeat of that mode delivered 58.31 FPS without new capture/packet/oversize/SPI
+errors. Full 1600x1200/15 then ran 90 seconds at 10.00 FPS, maximum gap139.2ms, with no
 new capture/packet/oversize/SPI/link errors or USB restart. The initial return to
-VGA30 passed at29.35FPS. A later20-second VGA follow-up was invalidated when the
-host selectedHD15 at18.37seconds; its441ms transition gap is not counted as a
+VGA30 passed at 29.35 FPS. A later 20-second VGA follow-up was invalidated when the
+host selected HD15 at 18.37 seconds; its 441 ms transition gap is not counted as a
 successful steady-mode test. OBS was not running when checked afterward; the
 source of that host selection was not established.
 

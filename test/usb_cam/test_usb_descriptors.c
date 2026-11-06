@@ -13,15 +13,15 @@ static void check_profile(UsbCamProfile profile) {
   const unsigned counts[] = {0,9,9,10,14,16};
   const unsigned expected = counts[profile];
   const tusb_desc_device_t* device = (const tusb_desc_device_t*)tud_descriptor_device_cb();
-  assert(device->idProduct == 0x4050 + (unsigned)profile);
+  assert(device->idProduct == 0x4060 + (unsigned)profile);
   const uint8_t* config = tud_descriptor_configuration_cb(0);
   assert(config && config[0] == 9 && config[1] == TUSB_DESC_CONFIGURATION);
   assert(!tud_descriptor_configuration_cb(1));
   const size_t length = le16(config + 2);
-  assert(length > 9 && length < 1600 && config[4] == (expected ? 4 : 2));
+  assert(length > 9 && length < 1600 && config[4] == (expected ? 5 : 3));
   unsigned interfaces = 0;
   unsigned video_frames = 0;
-  unsigned video_endpoints = 0;
+  unsigned video_endpoints = 0, hid_endpoints = 0, hid_interfaces = 0;
   unsigned interface_class = 0;
   unsigned interface_subclass = 0;
   size_t offset = 0;
@@ -33,6 +33,9 @@ static void check_profile(UsbCamProfile profile) {
       if (d[3] == 0) ++interfaces;
       interface_class = d[5];
       interface_subclass = d[6];
+      if (interface_class == TUSB_CLASS_HID) {
+        ++hid_interfaces; assert(d[4]==1 && d[6]==0 && d[7]==0);
+      }
       if (interface_class == TUSB_CLASS_VIDEO && interface_subclass == VIDEO_SUBCLASS_STREAMING) {
         assert(d[3] == 0 && d[4] == 1);  // Bulk streaming has one endpoint in alt 0.
       }
@@ -61,18 +64,27 @@ static void check_profile(UsbCamProfile profile) {
         previous = interval;
       }
       assert(usb_cam_valid_interval(usb_cam_profile_mode(profile, d[3]), le32(d + 21)));
+    } else if (d[1] == TUSB_DESC_ENDPOINT && interface_class == TUSB_CLASS_HID) {
+      ++hid_endpoints; assert(d[2]==0x84 && (d[3]&3)==TUSB_XFER_INTERRUPT && le16(d+4)==32 && d[6]==5);
     } else if (d[1] == TUSB_DESC_ENDPOINT && d[2] == 0x81) {
       ++video_endpoints;
       assert((d[3] & 3) == TUSB_XFER_BULK && le16(d + 4) == 64 && d[6] == 0);
     }
     offset += d[0];
   }
-  assert(offset == length && interfaces == (expected ? 4 : 2) && video_frames == expected && video_endpoints == (expected ? 1 : 0));
-  for (unsigned i = 0; i <= 5; ++i) {
+  assert(offset == length && interfaces == (expected ? 5 : 3) && video_frames == expected && video_endpoints == (expected ? 1 : 0));
+  assert(hid_interfaces==1 && hid_endpoints==1);
+  const uint8_t* report=tud_hid_descriptor_report_cb(0);
+  assert(report && !tud_hid_descriptor_report_cb(1));
+  assert(report[0]==0x06 && le16(report+1)==0xff00); // Vendor page, never keyboard.
+  assert(report[3]==0x09 && report[4]==1 && report[5]==0xa1 && report[6]==1);
+  assert(report[7]==0x85 && report[8]==1 && report[16]==0x95 && report[17]==16);
+  assert(report[20]==0x81 && report[22]==0x85 && report[23]==2 && report[28]==0xb1);
+  for (unsigned i = 0; i <= 6; ++i) {
     const uint16_t* string = tud_descriptor_string_cb(i, 0x0409);
     assert(string && (string[0] >> 8) == TUSB_DESC_STRING && (string[0] & 255) <= 128);
   }
-  assert(!tud_descriptor_string_cb(6, 0x0409));
+  assert(!tud_descriptor_string_cb(7, 0x0409));
 }
 int main(void) {
   assert(usb_cam_usb_profile() == USB_CAM_PROFILE_DISCOVERY);

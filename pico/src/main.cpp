@@ -4,6 +4,7 @@
 #include "pico/bootrom.h"
 #include "tusb.h"
 #include "receiver.h"
+#include "button_hid.h"
 #include "usb_cam/frame_clock.h"
 #include "usb_cam/commands.h"
 #include "usb_cam/config_retry.h"
@@ -239,6 +240,7 @@ int main() {
   usb_cam::FrameClock frame_clock(desired.interval_100ns / 10);
   for (;;) {
     tud_task();
+    button_hid_poll();
     esp_log_poll();
     commands();
     frame_clock.interval(desired.interval_100ns / 10);
@@ -251,6 +253,7 @@ int main() {
     if (profile_changed || usb_cam_usb_recovery_required() || (sending && uint32_t(now - sent_at) > 2000000)) {
       // A wedged transfer must not consume a slot forever. Disconnect and fully
       // deinitialize the controller before releasing memory; no speculative free.
+      button_hid_reset();
       tud_disconnect();
       if (!tud_deinit(0)) panic("USB recovery failed");
       if (sending) {

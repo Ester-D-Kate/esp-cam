@@ -22,6 +22,7 @@ usb_cam::FrameSlots slots;
 critical_section_t mutex;
 ReceiverStats stats;
 usb_cam::Config desired;
+usb_cam::ButtonBridge button;
 
 class Lock {
  public:
@@ -61,6 +62,9 @@ void validate(int slot) {
       (frame.header.kind == usb_cam::PacketKind::Status ||
        usb_cam::validate_payload(frame.header, frame.packet + usb_cam::kHeaderSize, frame.header.payload_size));
   Lock lock;
+  // The CRC-protected header carries button metadata independently of JPEG CRC.
+  if (length_valid) button.observe(bool(frame.header.capabilities & usb_cam::kButtonCapability),
+      frame.header.button, uint32_t(to_ms_since_boot(get_absolute_time())));
   if (!valid) {
     ++stats.invalid;
     if (!header_valid) ++stats.header_errors;
@@ -128,8 +132,10 @@ void receiver_run() {
     if (slot < 0) { sleep_us(10); continue; }
     ReceivedFrame& frame = frames[slot];
     usb_cam::Config snapshot;
-    { Lock lock; snapshot = desired; }
+    usb_cam::ButtonAck ack;
+    { Lock lock; snapshot = desired; ack = button.ack(); }
     usb_cam::encode_config(snapshot, response);
+    usb_cam::encode_button_ack(ack, response);
     clear_spi();
     dma_channel_configure(dma, &config, frame.packet, &spi_get_hw(kSpi)->dr, kDmaCapacity, true);
     dma_channel_configure(tx_dma, &tx_config, &spi_get_hw(kSpi)->dr, response, sizeof(response), true);
@@ -199,3 +205,9 @@ void receiver_configure(const usb_cam::Config& config) {
   Lock lock;
   desired = config;
 }
+
+bool receiver_button_peek(usb_cam::ButtonReport& report) { Lock lock; return button.peek(report); }
+void receiver_button_commit(const usb_cam::ButtonReport& report) { Lock lock; button.commit(report); }
+usb_cam::ButtonReport receiver_button_snapshot() { Lock lock; return button.snapshot(); }
+void receiver_button_resync() { Lock lock; button.request_resync(); }
+void receiver_button_expire(uint32_t now_ms) { Lock lock; button.expire(now_ms); }

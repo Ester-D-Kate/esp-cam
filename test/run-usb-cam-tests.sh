@@ -15,7 +15,7 @@ fi
   -I"$project_dir/pico/src" "$project_dir/test/usb_cam/test_iso_restart.c" \
   -o "$project_dir/.pio/host-tests/iso-restart-tests"
 "$project_dir/.pio/host-tests/iso-restart-tests"
-for name in protocol configuration runtime_protocol commands config_retry button; do
+for name in protocol configuration runtime_protocol commands config_retry button button_hid; do
   "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
     -I"$project_dir/shared" "$project_dir/test/usb_cam/test_$name.cpp" \
     -o "$project_dir/.pio/host-tests/$name-tests"
@@ -57,3 +57,9 @@ done
   "$project_dir/src/usb_cam/button_input.cpp" "$project_dir/test/usb_cam/test_button_input.cpp" \
   -o "$project_dir/.pio/host-tests/button-input-tests"
 "$project_dir/.pio/host-tests/button-input-tests"
+
+"${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -I"$project_dir/test/usb_cam/button_stubs" -I"$project_dir/shared" -I"$project_dir/pico/src" \
+  "$project_dir/pico/src/button_hid.cpp" "$project_dir/test/usb_cam/test_button_service.cpp" \
+  -o "$project_dir/.pio/host-tests/button-service-tests"
+"$project_dir/.pio/host-tests/button-service-tests"

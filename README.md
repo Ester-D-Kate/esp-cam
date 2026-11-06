@@ -1,6 +1,6 @@
-# ESP32-CAM + RP2040 USB camera
+# ESP32-CAM + RP2040 USB camera and programmable button
 
-**Branch: `codex/usb-cam` — the preserved USB-camera baseline.** This README
+**Branch: `codex/usb-cam-button` — USB camera plus raw GPIO12 press/release input.** This README
 belongs to this branch. Use the README from the branch you actually check out;
 the wireless, servo and USB builds have different pin assignments and uploads.
 
@@ -17,12 +17,14 @@ changing a supported mode does not require another ESP upload.
 | [`main`](https://github.com/Ester-D-Kate/esp-cam/tree/main) | Single ESP32-CAM: wireless preview, SD recording, GPIO12 recording button, optional gyro | Root `esp32cam`; that branch's README and `SERIAL_PROTOCOL.md` |
 | [`check-1`](https://github.com/Ester-D-Kate/esp-cam/tree/check-1) | Historical backup with single-board sources and archived two-board experiments | Read that branch's README before selecting a source tree |
 | [`codex/mqtt-servos`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/mqtt-servos) | Wireless camera with MQTT X/Y servos; SD recording/button disabled | Root `esp32cam`; that branch's README and `SERIAL_PROTOCOL.md` |
-| [`codex/usb-cam`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam) | This branch: ESP32 SPI → RP2040 USB camera | Root `usb_camera` plus `pico/zero_camera`; [USB guide](USB_CAMERA.md) |
+| [`codex/usb-cam`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam) | Camera baseline: ESP32 SPI → RP2040 USB camera | Root `usb_camera` plus `pico/zero_camera`; [USB guide](USB_CAMERA.md) |
+
+| [`codex/usb-cam-button`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam-button) | This branch: USB camera plus programmable press/release HID | Both USB firmwares; button guide below |
 
 The root `esp32cam` environment retained **in this USB branch** is the MQTT-servo
 version, not the recording version from `main`. For USB, explicitly select
-`usb_camera`. This baseline does not export GPIO12 button presses. Button support
-is developed separately so this working camera checkpoint remains available.
+`usb_camera`. This branch adds a generic HID button alongside video and diagnostics. The
+`codex/usb-cam` branch and pre-button tag preserve the camera-only baseline.
 
 ## Hardware and wiring
 
@@ -42,6 +44,7 @@ physical pin positions.
 | IO3 / U0R | GP3 | Pico READY handshake |
 | IO2 | GP7 | Pico → ESP configuration |
 | GND | GND | Common ground |
+| IO12 → existing button → GND | No additional Pico wire | Button, active-low with ESP internal pull-up |
 | U0T / IO1 | GP5, optional | ESP logs, only with `zero_camera_uart` |
 
 GP0/GP1/GP2/GP7 use hardware SPI0; GP3 is a GPIO handshake. GP8–GP14 remain unused.
@@ -59,8 +62,8 @@ project is needed. The repository already contains both configured projects.
 ```sh
 mkdir -p ~/Desktop/Codex-projects
 cd ~/Desktop/Codex-projects
-git clone --branch codex/usb-cam https://github.com/Ester-D-Kate/esp-cam.git esp-cam-usb
-cd esp-cam-usb
+git clone --branch codex/usb-cam-button https://github.com/Ester-D-Kate/esp-cam.git esp-cam-usb-button
+cd esp-cam-usb-button
 git branch --show-current
 ```
 
@@ -158,11 +161,111 @@ in RAM. `defaults` restores the current mode's preset. Check matching
 then check that frame counters actually advance. Detailed controls and recovery
 steps are in [USB_CAMERA.md](USB_CAMERA.md).
 
+## Programmable button on the computer
+
+Keep the existing button between **ESP GPIO12 and GND**. Firmware uses
+`INPUT_PULLUP`, active-low, with **50 ms debounce on both press and release**.
+Do not add an external pull-up: GPIO12 is also a reset strap. Sampling runs every
+5 ms independently of camera capture. Holding the button produces one press,
+then one release when released; gestures are decided by your computer code.
+
+Both boards need the button firmware once. **Update Pico first, then ESP.** The
+new Pico can stream from the previous ESP, but reports the button unavailable
+until the ESP is updated. New ESP button headers require the new Pico decoder.
+Future PC-side shortcut mappings need no firmware upload. The video sensor
+presets, SPI clocks, JPEG limits and requested frame rates are unchanged.
+
+The same physical USB device now has three independent interfaces:
+
+- UVC camera: **OV2640 Full MJPEG Video** or **OV3660 Full MJPEG Video**.
+- CDC **Camera Diagnostics**: existing settings/log commands.
+- **Camera Button**: vendor-defined HID input (usage page `0xFF00`, usage `1`).
+
+Full-profile VID/PIDs are `CAFE:4064` (OV2640) and `CAFE:4065` (OV3660); discovery
+is `CAFE:4060`. The older camera-only firmware used `405x`. macOS may ask to allow
+the new accessory, and OBS may require reselecting the camera after the PID change.
+
+This is raw input, not a keyboard shortcut or an automatic recording command.
+OBS does not interpret this custom report as its keyboard hotkey. Your reader
+can map press/release to recording, holds, double/triple clicks or other actions.
+The supplied reader only prints events; it runs beside OBS without opening the
+video or serial interfaces.
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run:
+
+```sh
+uv run tools/usb_button.py --list
+uv run tools/usb_button.py
+```
+
+The script installs its pinned `hidapi==0.15.0` dependency into uv's environment.
+If multiple cameras are connected, select the serial printed by `--list`:
+
+```sh
+uv run tools/usb_button.py --serial YOUR_PICO_SERIAL
+```
+
+Edit **`on_button(event)` in [tools/usb_button.py](tools/usb_button.py)** to add your
+own action. For example, one press/release pair looks like:
+
+```json
+{"event":"press","pressed":true,"sequence":1,"timestamp_ms":1000,"session_id":42,"revision":3,"lost":false}
+{"event":"release","pressed":false,"sequence":2,"timestamp_ms":1150,"session_id":42,"revision":4,"lost":false}
+```
+
+Use ESP `timestamp_ms` differences modulo `2**32` for gesture timing. `sync`,
+`unavailable`, `loss` and `disconnected` are state changes, **not clicks**: clear
+any pending multi-click/hold logic when they arrive. A sync with `pressed:true`
+means the button is already held. The initial held-at-boot button follows the
+existing debounce behavior, but opening/reopening a reader does not synthesize
+an action for a button already held.
+
+Use one action reader at a time. On open, the example reads a snapshot and requests
+a fresh button session; this discards offline history instead of replaying stale
+shortcuts. A second reader requesting resync also cancels the first reader's
+pending gesture. On Linux the user needs access to this device's `hidraw` node;
+use a device-specific udev rule rather than running the application as root.
+
+### Raw HID report contract
+
+Input **report ID 1** has a 16-byte payload (17 bytes including the report ID).
+All multi-byte fields are little-endian. No output endpoint is required.
+
+| Payload offset | Size | Meaning |
+|---|---:|---|
+| 0 | 1 | Version, `1` |
+| 1 | 1 | Flags: pressed `1`, available `2`, resync `4`, loss `8` |
+| 2 | 4 | Edge sequence, wrapping at `2**31` |
+| 6 | 4 | ESP debounced-edge time in milliseconds, wrapping at `2**32` |
+| 10 | 4 | Nonzero button session ID; changes at reboot/resync |
+| 14 | 2 | Report revision, wrapping at `2**16`, including lifecycle changes |
+
+`GET_REPORT(1, INPUT)` gives a snapshot with the resync flag. Feature **report ID
+2**, one-byte payload `1`, requests a fresh session and current state. Other
+feature values have no action. The example filters duplicate/older revisions,
+requests resync on gaps, and waits for a fresh available snapshot before actions.
+See the [HIDAPI interface](https://trezor.github.io/cython-hidapi/api.html).
+
+ESP and Pico each use fixed 32-event queues. Button metadata and acknowledgements
+ride in existing SPI packets; they add no transactions or JPEG bytes. A slow HID
+reader cannot hold a camera frame or block UVC submission. Overflow, reboot and
+link loss resynchronize state instead of pretending all edges were delivered.
+After two seconds without valid SPI headers, the button reports unavailable and
+released. Delivery is not persistent while hardware/readers are disconnected.
+
+The SPI button capability is bit `0x4`. It reuses eight diagnostic prefix bytes
+and four formerly reserved header bytes, retaining the 128-byte packet header and
+CRC. The first eight return-prefix bytes remain available for diagnostics.
+Button ACK metadata is excluded from camera configuration tokens and generations.
+This architecture avoids waiting on the button in the video path; **simultaneous
+physical-button/video performance still requires the on-device checks below**.
+
 ## Validation, history and recovery
 
 ```sh
 sh test/run-usb-cam-tests.sh
 sh test/run-servo-tests.sh
+uv run --python 3.12 test/usb_cam/test_usb_button.py
 pio run -e usb_camera -e esp32cam
 pio run -d pico -e zero_camera -e pico_camera -e zero_camera_fast -e zero_camera_uart
 ```
@@ -172,7 +275,7 @@ and the PlatformIO dependencies installed by the builds. They do not replace
 physical button, sensor, power, image-quality or frame-rate checks.
 
 - `usb-cam-first-working` preserves the original fixed-VGA milestone.
-- `usb-cam-pre-button-2026-11-06` preserves this documented full-menu camera baseline.
+- `usb-cam-pre-button-2026-11-06` preserves the camera-only baseline before this feature.
 - ESP full-menu source checkpoint: `3460611`; validated Pico source: `6b660ce`.
 - [USB_CAMERA.md](USB_CAMERA.md) records fixes and measurements, including failures
   and remaining limits. [Earlier milestone](docs/usb-camera-first-working.md).
@@ -183,3 +286,11 @@ If no frames arrive, first verify common ground, stable ESP power, GPIO0 free,
 IO15→GP1, IO3→GP3 and IO2→GP7. Close other capture apps and inspect CDC counters.
 The USB branch excludes Wi-Fi/SD recording. Use `main` and its wiring instructions
 for the single-board recording build.
+
+Button validation currently includes host debounce/queue/CRC/ACK tests, composite
+HID/UVC descriptor tests, actual HID-service failure paths and reader reconnect
+checks. These do not establish physical switch behavior or simultaneous video
+FPS. After both uploads, test presses, releases, holds and rapid double/triple
+presses with OBS active; compare high-rate and high-resolution captures with HID
+reading and unread. Existing camera-only measurements in `USB_CAMERA.md` remain
+baseline evidence, not measurements of the newly added physical button path.
