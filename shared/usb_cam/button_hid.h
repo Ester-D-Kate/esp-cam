@@ -20,12 +20,18 @@ class ButtonBridge {
   void observe(bool available, const ButtonEvent& event, uint32_t now_ms) {
     received_at_ = now_ms; expired_ = false; have_packet_ = true;
     if (!available) {
-      if (session_ || waiting_session_) { session_ = waiting_session_ = 0; request_resync(); }
+      if (session_ || waiting_session_) { session_ = waiting_session_ = 0; resync_again_ = false; request_resync(); }
       return;
     }
     if (waiting_) {
       if (!waiting_session_) waiting_session_ = event.boot_id;
       if (event.boot_id == waiting_session_) return;
+      if (resync_again_) {
+        // An earlier handshake may have completed before the latest request.
+        // Discard that session's backlog and fence again from the observed ID.
+        waiting_session_ = event.boot_id; resync_again_ = false;
+        return;
+      }
       waiting_ = false; waiting_session_ = 0; session_ = event.boot_id;
       latest_ = event; queue_.clear();
       emit(event, uint8_t(kButtonAvailable | kButtonSync | (loss_pending_ ? kButtonLoss : 0)));
@@ -42,6 +48,7 @@ class ButtonBridge {
     latest_ = event; emit(event, kButtonAvailable);
   }
   void request_resync(bool loss = false) {
+    if (waiting_ && waiting_session_) resync_again_ = true;
     waiting_ = true; loss_pending_ = loss_pending_ || loss;
     if (!waiting_session_) waiting_session_ = session_;
     queue_.clear();
@@ -81,5 +88,6 @@ class ButtonBridge {
   ButtonReport report_;
   uint32_t session_ = 0, waiting_session_ = 0, received_at_ = 0;
   bool waiting_ = true, have_packet_ = false, expired_ = false, loss_pending_ = false;
+  bool resync_again_ = false;
 };
 } // namespace usb_cam

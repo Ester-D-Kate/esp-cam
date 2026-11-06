@@ -18,7 +18,6 @@ changing a supported mode does not require another ESP upload.
 | [`check-1`](https://github.com/Ester-D-Kate/esp-cam/tree/check-1) | Historical backup with single-board sources and archived two-board experiments | Read that branch's README before selecting a source tree |
 | [`codex/mqtt-servos`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/mqtt-servos) | Wireless camera with MQTT X/Y servos; SD recording/button disabled | Root `esp32cam`; that branch's README and `SERIAL_PROTOCOL.md` |
 | [`codex/usb-cam`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam) | Camera baseline: ESP32 SPI → RP2040 USB camera | Root `usb_camera` plus `pico/zero_camera`; [USB guide](USB_CAMERA.md) |
-
 | [`codex/usb-cam-button`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam-button) | This branch: USB camera plus programmable press/release HID | Both USB firmwares; button guide below |
 
 The root `esp32cam` environment retained **in this USB branch** is the MQTT-servo
@@ -220,10 +219,11 @@ means the button is already held. The initial held-at-boot button follows the
 existing debounce behavior, but opening/reopening a reader does not synthesize
 an action for a button already held.
 
-Use one action reader at a time. On open, the example reads a snapshot and requests
-a fresh button session; this discards offline history instead of replaying stale
+Use one action reader at a time. On open, the example requests a fresh button session, then reads a
+snapshot after that request completes; this discards offline history instead of replaying stale
 shortcuts. A second reader requesting resync also cancels the first reader's
-pending gesture. On Linux the user needs access to this device's `hidraw` node;
+pending gesture. Reconnects stay with the first selected camera serial number.
+On Linux the user needs access to this device's `hidraw` node;
 use a device-specific udev rule rather than running the application as root.
 
 ### Raw HID report contract

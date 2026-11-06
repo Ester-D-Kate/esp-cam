@@ -48,6 +48,21 @@ int main(){
  b.observe(false,{},3000);assert(!b.ack().boot_id && !(b.snapshot().flags & kButtonAvailable));
  uint8_t bytes[kButtonReportBytes];ButtonReport r{{7,0x7fffffffu,0xfffffff0u,true},uint8_t(kButtonAvailable|kButtonPressed),65535};
  encode_button_report(r,bytes);assert(bytes[0]==1 && bytes[1]==3 && get32(bytes+2)==0x7fffffffu && get32(bytes+10)==7 && get16(bytes+14)==65535);
+ // A second reader request can arrive after ESP applied A->B but before Pico saw B.
+ // B's offline edges must stay hidden; request B->C before exposing state.
+ ButtonBridge superseded;synchronize(superseded);clear(superseded);
+ superseded.request_resync(); // ESP will change 2 -> 3.
+ superseded.request_resync(); // A newer reader needs state after this request.
+ superseded.observe(true,{3,0,3100,false},3100);
+ assert(!(superseded.snapshot().flags & kButtonAvailable));
+ assert(superseded.ack().boot_id==3 && superseded.ack().sequence==kButtonResync);
+ superseded.observe(true,{3,1,3110,true},3110);
+ superseded.observe(true,{3,2,3120,false},3120);
+ assert(!(superseded.snapshot().flags & kButtonAvailable));
+ superseded.observe(true,{4,0,3130,false},3130);
+ assert(superseded.snapshot().flags==(kButtonAvailable|kButtonSync));
+ clear(superseded);superseded.observe(true,{4,1,3200,true},3200);
+ assert(superseded.snapshot().flags==(kButtonAvailable|kButtonPressed));
  // Repeated lifecycle changes retain their ordering across report revision wrap.
  ButtonBridge wrap;uint16_t previous=wrap.snapshot().revision;
  for(unsigned i=0;i<65540;++i){wrap.request_resync();auto current=wrap.snapshot().revision;assert(uint16_t(current-previous)==1);previous=current;}

@@ -26,12 +26,12 @@ def decode_report(raw):
 
 
 class ButtonReader:
-    """Fence old input with GET_REPORT, then wait for the requested fresh snapshot."""
+    """Ignore input at/before the snapshot taken after requesting a fresh session."""
     def __init__(self, snapshot):
         self.revision = snapshot["revision"]
         self.sequence = snapshot["sequence"]
         self.session = snapshot["session_id"]
-        self.ready = False
+        self.ready = bool(snapshot["flags"] & AVAILABLE)
 
     def feed(self, report):
         delta = (report["revision"] - self.revision) & 0xffff
@@ -59,6 +59,18 @@ class ButtonReader:
         return event
 
 
+def start_session(device):
+    # SET must finish before GET: an old SYNC arriving between GET and SET
+    # could otherwise make stale queued presses actionable in a new reader.
+    if device.send_feature_report(bytes([2, 1])) != 2:
+        raise OSError("Could not request a fresh button snapshot")
+    try:
+        snapshot = decode_report(device.get_input_report(1, 17))
+    except ValueError as error:
+        raise OSError("Could not read a valid button snapshot") from error
+    return ButtonReader(snapshot)
+
+
 def on_button(event):
     """Customize this callback. Only press/release are actions; sync/loss reset gestures.
 
@@ -74,6 +86,23 @@ def camera_buttons(hid, serial=None):
             if 0x4060 <= device["product_id"] <= 0x4065
             and device.get("usage_page") == 0xff00 and device.get("usage") == 1
             and (serial is None or device.get("serial_number") == serial)]
+
+
+class CameraSelection:
+    """Keep reconnects on the initially selected physical camera."""
+    def __init__(self, serial=None):
+        self.serial = serial
+
+    def find(self, hid):
+        matches = camera_buttons(hid, self.serial)
+        if len(matches) > 1:
+            raise SystemExit("Several camera buttons found; choose --serial from --list")
+        if not matches:
+            raise OSError("Waiting for the camera's HID button interface")
+        if not matches[0].get("serial_number"):
+            raise OSError("Camera has no serial number; cannot safely retain its identity")
+        self.serial = matches[0]["serial_number"]
+        return matches[0]
 
 
 def main():
@@ -92,19 +121,14 @@ def main():
         return
     deadline = time.monotonic() + args.duration if args.duration else float("inf")
     last_error = None
+    selection = CameraSelection(args.serial)
     while time.monotonic() < deadline:
         device = None
         try:
-            matches = camera_buttons(hid, args.serial)
-            if len(matches) > 1:
-                raise SystemExit("Several camera buttons found; choose --serial from --list")
-            if not matches:
-                raise OSError("Waiting for the camera's HID button interface")
+            match = selection.find(hid)
             device = hid.device()
-            device.open_path(matches[0]["path"])
-            reader = ButtonReader(decode_report(device.get_input_report(1, 17)))
-            if device.send_feature_report(bytes([2, 1])) != 2:
-                raise OSError("Could not request a fresh button snapshot")
+            device.open_path(match["path"])
+            reader = start_session(device)
             last_error = None
             while time.monotonic() < deadline:
                 raw = device.read(17, timeout_ms=250)
@@ -114,14 +138,13 @@ def main():
                     event = reader.feed(decode_report(raw))
                 except ValueError:
                     # Invalid input cannot become an action; fence and resync.
-                    reader = ButtonReader(decode_report(device.get_input_report(1, 17)))
-                    device.send_feature_report(bytes([2, 1]))
+                    reader = start_session(device)
                     on_button({"event": "loss", "lost": True})
                     continue
                 if event is not None:
                     on_button(event)
                     if event["event"] == "loss":
-                        device.send_feature_report(bytes([2, 1]))
+                        reader = start_session(device)
         except OSError as error:
             if str(error) != last_error:
                 print(str(error), file=sys.stderr, flush=True)

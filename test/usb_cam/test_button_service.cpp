@@ -5,6 +5,8 @@
 #include "receiver.h"
 #include "tusb.h"
 using namespace usb_cam;
+// TinyUSB supplies this weak no-op unless the application handles remount.
+extern "C" __attribute__((weak)) void tud_mount_cb() {}
 static ButtonBridge bridge;
 uint64_t test_time_us=110000;
 static bool ready=false,accept=false,resync_during_send=false;
@@ -34,5 +36,13 @@ int main(){
  bridge.observe(true,{3,0,125,true},125);resync_during_send=true;
  button_hid_poll();assert(bridge.pending()==1); // Concurrent reset cannot pop the replacement snapshot.
  resync_during_send=false;tud_umount_cb();assert(!(bridge.snapshot().flags & kButtonAvailable));
+ // A USB bus reset does not call umount in pinned TinyUSB. SET_CONFIGURATION
+ // calls mount before HID delivery resumes; old offline edges must be invalid.
+ bridge=ButtonBridge{};
+ bridge.observe(true,{10,0,130,false},130);bridge.observe(true,{11,0,140,false},140);
+ bridge.observe(true,{11,1,150,true},150);
+ tud_mount_cb();
+ assert(!(bridge.snapshot().flags & kButtonAvailable));
+ assert(bridge.ack().sequence==kButtonResync);
  puts("HID service passed: no reader/failed submission never waits, GET is state, resync races retain snapshot.");
 }

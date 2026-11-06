@@ -29,3 +29,6 @@ extern "C" void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
     receiver_button_resync(); // Fresh snapshot handshake; no keyboard or camera action.
 }
 extern "C" void tud_umount_cb(void) { button_hid_reset(); }
+// TinyUSB bus reset skips umount. Mount runs in tud_task before input resumes,
+// so every SET_CONFIGURATION also invalidates offline edges without ISR locks.
+extern "C" void tud_mount_cb(void) { button_hid_reset(); }
