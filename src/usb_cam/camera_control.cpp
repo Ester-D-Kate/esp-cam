@@ -72,7 +72,8 @@ void CameraControl::configure(const usb_cam::Config& desired) {
   }
   const bool settings_changed = memcmp(programmed_.settings, desired.settings,
                                        sizeof(desired.settings)) != 0;
-  const bool reset = !fresh && (dirty_ || settings_changed);
+  const bool reset = !fresh && (dirty_ || settings_changed ||
+      (programmed_.readout.enabled && !desired.readout.enabled));
   if (reset) {
     ++sensor_resets_;
     const uint32_t error = usb_cam::reset_sensor_defaults(sensor);
@@ -80,7 +81,8 @@ void CameraControl::configure(const usb_cam::Config& desired) {
   }
   const bool full = fresh || !configured_ || reset;
   usb_cam::SensorUpdate update;
-  update.geometry = full || clock_changed || !usb_cam::pll_equal(programmed_.pll, desired.pll) || programmed_.width != desired.width ||
+  update.geometry = full || clock_changed || !usb_cam::pll_equal(programmed_.pll, desired.pll) ||
+                    !usb_cam::readout_equal(programmed_.readout, desired.readout) || programmed_.width != desired.width ||
                     programmed_.height != desired.height;
   update.quality = update.geometry || programmed_.quality != desired.quality ||
                    programmed_.max_jpeg != desired.max_jpeg;
@@ -140,6 +142,6 @@ void CameraControl::describe(usb_cam::Header& h) const {
   h.generation = session_.applied_generation(); h.config_token = session_.applied_token();
   h.attempted_generation = c.generation; h.attempted_token = usb_cam::config_token(c);
   h.config_error = session_.error(); h.quality = quality_; h.sensor_pid = sensor_pid_;
-  h.capabilities = usb_cam::kSensorProfilesCapability;
+  h.capabilities = usb_cam::kSensorProfilesCapability | usb_cam::kFullModesCapability;
   h.camera_starts = camera_starts_; h.sensor_resets = sensor_resets_; h.xclk_hz = xclk_hz_;
 }

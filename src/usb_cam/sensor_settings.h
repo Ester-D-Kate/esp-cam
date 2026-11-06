@@ -22,12 +22,75 @@ inline int set_gain_ceiling(sensor_t* s, int value) {
 struct SensorUpdate {
   bool geometry = true, quality = true, controls = true;
 };
+// The pinned OV3660 driver's image-options callback can hide a failed write.
+// Verify geometry and orientation after it, then verify each bounded override.
+inline bool sensor_register_is(sensor_t* s, int reg, int mask, int value) {
+  return s->get_reg(s, reg, mask) == value;
+}
+inline bool sensor_write_checked(sensor_t* s, int reg, int mask, int value) {
+  return !s->set_reg(s, reg, mask, value) && sensor_register_is(s, reg, mask, value);
+}
+inline bool sensor_word_is(sensor_t* s, int reg, unsigned value) {
+  return sensor_register_is(s, reg, 0xff, value >> 8) &&
+      sensor_register_is(s, reg + 1, 0xff, value & 255);
+}
+inline bool sensor_word_checked(sensor_t* s, int reg, unsigned value) {
+  return sensor_write_checked(s, reg, 0xff, value >> 8) &&
+      sensor_write_checked(s, reg + 1, 0xff, value & 255);
+}
+inline uint32_t apply_readout(sensor_t* s, const Config& c) {
+  const auto& r = c.readout;
+  if (!r.enabled) return 0;
+  if (s->set_res_raw(s,r.start_x,r.start_y,r.end_x,r.end_y,r.offset_x,r.offset_y,
+      r.total_x,r.total_y,c.width,c.height,r.scale,r.binning)) return kConfigTiming;
+  const unsigned values[] = {r.start_x,r.start_y,r.end_x,r.end_y,c.width,c.height,
+                            r.total_x,r.total_y,r.offset_x,r.offset_y};
+  for (unsigned i=0; i<sizeof(values)/sizeof(*values); ++i)
+    if (!sensor_word_is(s,0x3800+2*i,values[i])) return kConfigTiming;
+  const bool flip=s->status.vflip, mirror=s->status.hmirror;
+  const unsigned reg20=(r.binning ? 1 : 0x40) | (flip ? 6 : 0);
+  const unsigned reg21=0x20 | (r.binning ? 1 : 0) | (mirror ? 6 : 0);
+  const unsigned reg4514=r.binning ? (flip==mirror ? 0xaa : 0xbb) : (mirror ? 0xbb : 0x88);
+  if (!sensor_register_is(s,0x3820,0xff,reg20) || !sensor_register_is(s,0x3821,0xff,reg21) ||
+      !sensor_register_is(s,0x4514,0xff,reg4514) ||
+      !sensor_register_is(s,0x4520,0xff,r.binning ? 0x0b : 0xb0) ||
+      !sensor_register_is(s,0x5001,0x20,r.scale ? 0x20 : 0)) return kConfigTiming;
+  const unsigned max_exposure=r.total_y-4;
+  const unsigned step50=sysclk_hz(c)/r.total_x/100, step60=sysclk_hz(c)/r.total_x/120;
+  const unsigned bands50=max_exposure/step50, bands60=max_exposure/step60;
+  // Short exposures cannot fit a complete mains-light band. Disable banding
+  // in that case, and prohibit night mode/frame insertion from stretching VTS.
+  const bool banding=bands50 && bands60;
+  if (!sensor_write_checked(s,0x3814,0xff,r.x_increment) ||
+      !sensor_write_checked(s,0x3815,0xff,r.y_increment) ||
+      !sensor_word_checked(s,0x3a02,max_exposure) || !sensor_word_checked(s,0x3a14,max_exposure) ||
+      !sensor_word_checked(s,0x3a08,step50) || !sensor_word_checked(s,0x3a0a,step60) ||
+      !sensor_write_checked(s,0x3a0d,0x3f,bands60 > 63 ? 63 : bands60) ||
+      !sensor_write_checked(s,0x3a0e,0x3f,bands50 > 63 ? 63 : bands50) ||
+      !sensor_write_checked(s,0x3a00,0x34,banding ? 0x30 : 0x10) ||
+      !sensor_write_checked(s,0x3a05,0x40,0)) return kConfigTiming;
+  const int requested=c.settings[unsigned(Setting::AecValue)];
+  if (requested!=kDefaultSetting) {
+    // The SDK setter clamps against the current VTS: only call it after the
+    // requested raw timing is installed. Readback verifies manual exposure;
+    // automatic AEC is allowed to update its own live integration register.
+    if (s->set_aec_value(s,requested)) return setting_error(Setting::AecValue);
+    if (c.settings[unsigned(Setting::Aec)]==0 &&
+        !sensor_register_is(s,0x3500,0xfffff,unsigned(requested)<<4)) return kConfigTiming;
+  }
+  const int exposure=s->get_reg(s,0x3500,0xfffff);
+  if (exposure < 0 || (unsigned(exposure) > (max_exposure<<4) &&
+      !sensor_write_checked(s,0x3500,0xfffff,max_exposure<<4))) return kConfigTiming;
+  return 0;
+}
 inline uint32_t validate_sensor_target(sensor_t* sensor, const Config& c) {
   if (!valid_config(c)) return kConfigInvalid;
   if (!sensor || (sensor->id.PID != OV2640_PID && sensor->id.PID != OV3660_PID)) return kConfigSensor;
   if (sensor->id.PID == OV2640_PID && (c.width > 1600 || c.height > 1200)) return kConfigGeometry;
   if (!sensor->set_framesize || !sensor->set_quality) return kConfigSensor;
   if (c.pll.multiplier && (sensor->id.PID != OV3660_PID || !sensor->set_pll)) return kConfigTiming;
+  if (c.readout.enabled && (sensor->id.PID != OV3660_PID || !sensor->set_res_raw ||
+      !sensor->set_reg || !sensor->get_reg)) return kConfigTiming;
   return 0;
 }
 inline uint32_t apply_sensor_config(sensor_t* sensor, const Config& c,
@@ -57,9 +120,11 @@ inline uint32_t apply_sensor_config(sensor_t* sensor, const Config& c,
   if (update.quality && sensor->set_quality(sensor, c.quality)) return kConfigQuality;
   if (update.controls) {
     for (unsigned i = 0; i < kSettingCount; ++i)
-      if (c.settings[i] != kDefaultSetting && setters[i](sensor, c.settings[i])) return setting_error(Setting(i));
+      if (c.settings[i] != kDefaultSetting && !(c.readout.enabled && i==unsigned(Setting::AecValue)) &&
+          setters[i](sensor, c.settings[i])) return setting_error(Setting(i));
   }
-  return 0;
+  // Orientation controls rewrite the sampling increments, so raw readout is last.
+  return update.geometry || update.controls ? apply_readout(sensor,c) : 0;
 }
 inline uint32_t reset_sensor_defaults(sensor_t* sensor) {
   if (!sensor || !sensor->reset || !sensor->init_status || !sensor->set_pixformat)

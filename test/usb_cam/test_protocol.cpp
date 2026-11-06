@@ -89,18 +89,15 @@ static void test_slow_usb_ownership() {
   slots.received(b);
   assert(slots.begin_validate() == b);
   slots.publish(b);
-  int c = slots.begin_receive(replaced);
-  assert(c >= 0 && c != a && c != b);
-  slots.received(c);
-  assert(slots.begin_validate() == c);
-  slots.publish(c);
   int next = slots.begin_receive(replaced);
-  assert(next == b && replaced);  // Preserve newest ready and in-flight USB.
+  assert(next == -1 && !replaced); // Preserve the only complete frame while USB sends A.
   assert(slots.state(a) == SlotState::Sending);
-  slots.release(next);
   slots.release(a);
-  assert(slots.take_latest() == c);
-  slots.release(c);
+  // USB completes before the next CS edge: B must still be immediately usable.
+  assert(slots.take_latest() == b);
+  assert(slots.begin_receive(replaced)==a && !replaced);
+  slots.release(a);
+  slots.release(b);
   assert(slots.take_latest() == -1);
 }
 
@@ -109,7 +106,6 @@ static void test_incomplete_and_validation_ownership() {
   bool replaced = false;
   int a = slots.begin_receive(replaced);
   int b = slots.begin_receive(replaced);
-  int c = slots.begin_receive(replaced);
   assert(slots.begin_receive(replaced) == -1);
   slots.received(a);
   assert(slots.begin_validate() == a);
@@ -118,7 +114,6 @@ static void test_incomplete_and_validation_ownership() {
   assert(slots.begin_receive(replaced) == a);
   slots.release(a);
   slots.release(b);
-  slots.release(c);
 }
 
 static void test_never_send_an_older_frame_after_latest() {
@@ -130,6 +125,10 @@ static void test_never_send_an_older_frame_after_latest() {
     assert(slots.begin_validate() == slot);
     slots.publish(slot);
   }
+  // Without an active USB consumer, keep accepting fresh data by replacing oldest.
+  const int replace=slots.begin_receive(replaced);
+  assert(replace>=0 && replaced);
+  slots.received(replace); assert(slots.begin_validate()==replace); slots.publish(replace);
   const int latest = slots.take_latest();
   assert(latest >= 0);
   slots.release(latest);

@@ -10,12 +10,27 @@ static bool usb_cam_control_xfer(uint8_t rhport, const tusb_control_request_t* r
 #define tud_control_xfer usb_cam_control_xfer
 #define videod_control_xfer_cb usb_cam_sdk_video_control
 #define videod_xfer_cb usb_cam_sdk_video_xfer
+// The SDK uses uint_fast16_t for the remaining JPEG size. It is 32 bits on
+// RP2040 GCC but only 16 bits on macOS Clang. Keep that internal arithmetic
+// wide on both so host tests exercise the target's >64-KiB transfer behavior.
+#if UINT_FAST16_MAX < UINT32_MAX
+#define uint_fast16_t uint32_t
+#define USB_CAM_WIDENED_SDK_FAST16
+#endif
 #include "class/video/video_device.c"
+#ifdef USB_CAM_WIDENED_SDK_FAST16
+#undef uint_fast16_t
+#undef USB_CAM_WIDENED_SDK_FAST16
+#endif
 #undef videod_xfer_cb
 #undef videod_control_xfer_cb
 #undef tud_control_xfer
 
 _Static_assert(TUSB_VERSION_NUMBER == 1800, "Review the ownership adapter when updating TinyUSB");
+extern int usb_cam_validate_commit_cb(const video_probe_and_commit_control_t* parameters);
+// Stage OUT data separately. A rejected COMMIT must not overwrite negotiated
+// state or abort an active endpoint before the application validates it.
+static video_probe_and_commit_control_t pending_control;
 
 static bool camera_stream_control(const tusb_control_request_t* request) {
   const uint8_t selector = TU_U16_HIGH(request->wValue);
@@ -38,13 +53,18 @@ static bool normalize_probe(video_probe_and_commit_control_t* p, uint8_t request
   }
   // 0.18 otherwise derives an uncompressed YUV size, and returns partial
   // defaults when more than one frame/interval is present. Bound MJPEG to RAM.
-  p->dwMaxVideoFrameSize = USB_CAM_BUFFER_BYTES;
+  p->dwMaxVideoFrameSize = usb_cam_profile_capacity(usb_cam_usb_profile());
   p->dwMaxPayloadTransferSize = CFG_TUD_VIDEO_STREAMING_EP_BUFSIZE;
   return true;
 }
 
 static bool usb_cam_control_xfer(uint8_t rhport, const tusb_control_request_t* request,
                                 void* buffer, uint16_t length) {
+  if (camera_stream_control(request) && request->bmRequestType_bit.direction == TUSB_DIR_OUT &&
+      request->bRequest == VIDEO_REQUEST_SET_CUR && length == sizeof(pending_control)) {
+    pending_control = *(video_probe_and_commit_control_t*)buffer;
+    return tud_control_xfer(rhport, request, &pending_control, length);
+  }
   if (camera_stream_control(request) && request->bmRequestType_bit.direction == TUSB_DIR_IN &&
       length == sizeof(video_probe_and_commit_control_t) && request->bRequest != VIDEO_REQUEST_GET_RES) {
     if (!normalize_probe(buffer, request->bRequest, false)) return false;
@@ -59,13 +79,21 @@ bool videod_control_xfer_cb(uint8_t rhport, uint8_t stage, const tusb_control_re
   if (setting) {
     if (!stream) return false;
     const bool commit = TU_U16_HIGH(request->wValue) == VIDEO_VS_CTL_COMMIT;
-    if (!normalize_probe(&stream->probe_commit_payload, VIDEO_REQUEST_SET_CUR, commit)) return false;
+    if (!normalize_probe(&pending_control, VIDEO_REQUEST_SET_CUR, commit)) {
+      stream->error_code = VIDEO_ERROR_OUT_OF_RANGE;
+      return false;
+    }
+    if (commit) {
+      const int error = usb_cam_validate_commit_cb(&pending_control);
+      if (error != VIDEO_ERROR_NONE) { stream->error_code = (uint8_t)error; return false; }
+    }
     if (commit && stream->desc.ep[0]) {
       // Quiesce the old endpoint before the class clears its buffer pointer.
       // Our RP2040 adapter aborts DMA and clears busy/claimed state on reopen.
       const uint8_t* base = _videod_itf[stream->index_vc].beg;
       if (!usbd_edpt_open(rhport, (const tusb_desc_endpoint_t*)(base + stream->desc.ep[0]))) return false;
     }
+    stream->probe_commit_payload = pending_control;
   }
   const bool result = usb_cam_sdk_video_control(rhport, stage, request);
   if (result && setting) {

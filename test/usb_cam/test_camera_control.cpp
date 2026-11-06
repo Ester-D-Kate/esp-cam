@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstdio>
 #include <vector>
+#include <map>
 #include <Arduino.h>
 #include "camera_control.h"
 #include "sensor_settings.h"
@@ -15,6 +16,26 @@ static unsigned starts = 0, stops = 0, returns = 0, resets = 0, writes = 0, cloc
 static int actual_brightness = 0, actual_clock = 20;
 static int actual_pll = 0;
 static bool pll_ok = true;
+static std::map<int,int> raw_registers;
+static bool raw_ok=true;
+static int raw_write(sensor_t*,int reg,int mask,int value) {
+  raw_registers[reg]=(raw_registers[reg]&~mask)|(value&mask); return 0;
+}
+static int raw_read(sensor_t*,int reg,int mask) { return raw_registers[reg]&mask; }
+static int raw_size(sensor_t*,int sx,int sy,int ex,int ey,int ox,int oy,int tx,int ty,
+    int w,int h,bool scale,bool binning) {
+  if (!raw_ok) return -1;
+  const int values[]={sx,sy,ex,ey,w,h,tx,ty,ox,oy};
+  for (unsigned i=0;i<10;++i) {
+    raw_registers[0x3800+2*i]=values[i]>>8; raw_registers[0x3801+2*i]=values[i]&255;
+  }
+  raw_registers[0x3820]=binning ? 1 : 0x40;
+  raw_registers[0x3821]=0x20|(binning ? 1 : 0);
+  raw_registers[0x4514]=binning ? 0xaa : 0x88;
+  raw_registers[0x4520]=binning ? 0x0b : 0xb0;
+  raw_registers[0x5001]=scale ? 0x20 : 0;
+  return 0;
+}
 static int pll(sensor_t*, int, int multiplier, int, int, int, int, int, int) {
   actual_pll = multiplier;
   return pll_ok ? 0 : -1;
@@ -247,7 +268,7 @@ int main() {
   CameraControl ov3660;
   config = Config{}; config.generation = 300; config.pll.multiplier = 30;
   ov3660.configure(config); confirm(ov3660, status);
-  assert(actual_pll == 30 && status.capabilities == kSensorProfilesCapability);
+  assert(actual_pll == 30 && status.capabilities == (kSensorProfilesCapability | kFullModesCapability));
   const unsigned starts_before = starts;
   config.generation++; config.interval_100ns = USB_CAM_INTERVAL(25);
   ov3660.configure(config); confirm(ov3660, status, 0);
@@ -262,5 +283,33 @@ int main() {
   pll_ok = true; config.generation++; config.pll.multiplier = 0;
   ov3660.configure(config); confirm(ov3660, status);
   assert(actual_pll == 0 && starts == starts_before);
+  // Fast readout changes geometry, but returning to the calibrated mode must
+  // also reset AEC/night/increment registers while preserving the camera driver.
+  sensor.set_res_raw=raw_size; sensor.get_reg=raw_read; sensor.set_reg=raw_write;
+  config=mode_config(1,USB_CAM_INTERVAL(60),USB_CAM_PROFILE_OV3660_FULL);
+  config.generation=400;
+  ov3660.configure(config); confirm(ov3660,status);
+  unsigned before_writes=writes;
+  config.generation++; config.readout.total_y+=10;
+  ov3660.configure(config); confirm(ov3660,status);
+  assert(writes>before_writes);
+  const unsigned before_exit=resets;
+  config.generation++; config.readout.enabled=false;
+  ov3660.configure(config); confirm(ov3660,status);
+  assert(resets==before_exit+1 && starts==starts_before && stops==0);
+  config.generation++; config.readout.enabled=true; raw_ok=false;
+  ov3660.configure(config); ov3660.describe(status);
+  assert(!ov3660.can_capture() && status.config_error==kConfigTiming && status.generation!=config.generation);
+  raw_ok=true; config=mode_config(9,USB_CAM_INTERVAL(15),USB_CAM_PROFILE_OV3660_FULL);
+  config.generation=410;
+  ov3660.configure(config); confirm(ov3660,status);
+  const unsigned oversized_full=status.oversized;
+  jpeg.insert(jpeg.end()-2,114688-jpeg.size(),0x42);
+  frame.buf=jpeg.data(); frame.len=jpeg.size();
+  auto* expanded=ov3660.capture(status,length);
+  assert(expanded && length==114688 && status.oversized==oversized_full);
+  esp_camera_fb_return(expanded);
+  jpeg.insert(jpeg.end()-2,1,0x42); frame.buf=jpeg.data(); frame.len=jpeg.size();
+  assert(!ov3660.capture(status,length) && status.oversized==oversized_full+1 && !held);
   puts("Camera lifecycle passed: persistent driver, defaults, frame timeout, clock and recovery.");
 }

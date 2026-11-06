@@ -10,12 +10,15 @@ enum class SlotState : uint8_t { Free, Receiving, Received, Validating, Ready, S
 // Data is accessed without the lock only while owned by Receiving/Validating/Sending.
 class FrameSlots {
  public:
-  static constexpr int kCount = 3;
+  static constexpr int kCount = 2;
 
   int begin_receive(bool& replaced) {
     replaced = false;
     int slot = find(SlotState::Free);
-    if (slot < 0) {
+    // With two slots, reclaiming Ready while the other is Sending discards the
+    // only complete next frame before the next CS even arrives. Apply READY
+    // backpressure instead; USB completion frees its slot without losing this one.
+    if (slot < 0 && find(SlotState::Sending) < 0) {
       slot = oldest_ready();
       replaced = slot >= 0;
     }

@@ -10,15 +10,15 @@ static uint32_t le32(const uint8_t* p) {
 
 static void check_profile(UsbCamProfile profile) {
   usb_cam_usb_select_profile(profile);
-  const unsigned expected = profile == USB_CAM_PROFILE_DISCOVERY ? 0 :
-      profile == USB_CAM_PROFILE_OV3660 ? 10 : 9;
+  const unsigned counts[] = {0,9,9,10,14,16};
+  const unsigned expected = counts[profile];
   const tusb_desc_device_t* device = (const tusb_desc_device_t*)tud_descriptor_device_cb();
   assert(device->idProduct == 0x4050 + (unsigned)profile);
   const uint8_t* config = tud_descriptor_configuration_cb(0);
   assert(config && config[0] == 9 && config[1] == TUSB_DESC_CONFIGURATION);
   assert(!tud_descriptor_configuration_cb(1));
   const size_t length = le16(config + 2);
-  assert(length > 9 && length < 1024 && config[4] == (expected ? 4 : 2));
+  assert(length > 9 && length < 1600 && config[4] == (expected ? 4 : 2));
   unsigned interfaces = 0;
   unsigned video_frames = 0;
   unsigned video_endpoints = 0;
@@ -42,17 +42,22 @@ static void check_profile(UsbCamProfile profile) {
       static const unsigned sizes[][2] = {{640,480},{800,600},{1280,720},{320,240},
           {160,120},{480,320},{1024,768},{1280,1024},{1600,1200},{1920,1080}};
       assert(d[3] == video_frames && video_frames <= expected);
-      assert(le16(d + 5) == sizes[video_frames - 1][0]);
-      assert(le16(d + 7) == sizes[video_frames - 1][1]);
-      assert(le32(d + 17) == 65536);
+      const UsbCamMode* mode=usb_cam_profile_mode(profile,video_frames);
+      if (video_frames <= 9) {
+        assert(le16(d+5)==sizes[video_frames-1][0] && le16(d+7)==sizes[video_frames-1][1]);
+      }
+      assert(le16(d+5)==mode->width && le16(d+7)==mode->height);
+      const int full=(unsigned)profile>=4;
+      assert(le32(d + 17) == (full ? 114688 : 65536));
       // UXGA may send 65536 bytes per 666666 * 100 ns. Advertise the
       // corresponding maximum rounded up, rather than the old 720 KiB/s cap.
-      assert(le32(d + 13) == (video_frames >= 9 ? 7864328u : 5898240u));
+      assert(le32(d + 13) == (!full && video_frames >= 9 ? 7864328u : 5898240u));
       assert(d[25] >= 2 && d[0] == 26 + d[25] * 4);
       uint32_t previous = 0;
       for (unsigned n = 0; n < d[25]; ++n) {
         const uint32_t interval = le32(d + 26 + 4 * n);
-        assert(interval > previous && interval >= 166666 && interval <= 2000000);
+        assert(interval > previous && interval >= 83333 && interval <= 2000000);
+        assert(n < mode->interval_count && interval==mode->intervals[n]);
         previous = interval;
       }
       assert(usb_cam_valid_interval(usb_cam_profile_mode(profile, d[3]), le32(d + 21)));
@@ -71,7 +76,7 @@ static void check_profile(UsbCamProfile profile) {
 }
 int main(void) {
   assert(usb_cam_usb_profile() == USB_CAM_PROFILE_DISCOVERY);
-  for (unsigned p = 0; p <= USB_CAM_PROFILE_OV3660; ++p) check_profile((UsbCamProfile)p);
+  for (unsigned p = 0; p <= USB_CAM_PROFILE_OV3660_FULL; ++p) check_profile((UsbCamProfile)p);
   // Return to the smaller sensor and prove extended indices disappear.
   check_profile(USB_CAM_PROFILE_OV2640);
   puts("USB descriptors passed: discovery, both sensors, legacy fallback, indices and identities.");

@@ -5,7 +5,73 @@
 
 using namespace usb_cam;
 
+static void test_expanded_readout_wire() {
+  Config c = profile_defaults(USB_CAM_PROFILE_OV3660);
+  c.max_jpeg = 114688;
+  assert(valid_config(c));
+  std::array<uint8_t, kControlSize> b{};
+  encode_config(c, b.data());
+  b[82] = 7; b[83] = b[84] = 0x31;
+  const uint16_t fields[] = {384,288,1695,1259,8,3,1600,556};
+  for (unsigned i = 0; i < 8; ++i) put16(b.data() + 86 + 2*i, fields[i]);
+  put32(b.data()+124, crc32(b.data(),124));
+  Config decoded;
+  assert(decode_config(b.data(),b.size(),decoded));
+  std::array<uint8_t,kControlSize> roundtrip{};
+  encode_config(decoded,roundtrip.data());
+  assert(b == roundtrip);
+  for (const auto field : {std::pair<unsigned,uint16_t>{86,385}, {90,2081},
+                           {98,4}, {100,490}}) {
+    auto bad = b; put16(bad.data()+field.first,field.second);
+    put32(bad.data()+124,crc32(bad.data(),124));
+    assert(!decode_config(bad.data(),bad.size(),decoded));
+  }
+  for (const auto field : {std::pair<unsigned,uint8_t>{82,15}, {83,0x21},
+                           {84,0x71}, {85,1}, {102,1}, {123,1}}) {
+    auto bad = b; bad[field.first] = field.second;
+    put32(bad.data()+124,crc32(bad.data(),124));
+    assert(!decode_config(bad.data(),bad.size(),decoded));
+  }
+  auto no_pll = b;
+  for (unsigned i=76;i<82;++i) no_pll[i]=0;
+  put32(no_pll.data()+124,crc32(no_pll.data(),124));
+  assert(!decode_config(no_pll.data(),no_pll.size(),decoded));
+}
+
+static void test_full_profiles() {
+  const auto ov2640 = UsbCamProfile(4), ov3660 = UsbCamProfile(5);
+  assert(usb_cam_profile_for(0x26,3)==ov2640 && usb_cam_profile_for(0x3660,3)==ov3660);
+  assert(usb_cam_profile_count(ov2640)==14 && usb_cam_profile_count(ov3660)==16);
+  const unsigned rates2640[] = {30,30,15,60,60,30,15,15,15,60,60,60,60,60};
+  const unsigned rates3660[] = {60,45,45,120,120,60,45,15,15,20,15,120,120,120,120,60};
+  for (const auto p : {ov2640,ov3660}) {
+    for (unsigned i=1;i<=usb_cam_profile_count(p);++i) {
+      const auto* m=usb_cam_profile_mode(p,i);
+      const unsigned ceiling=(p==ov2640 ? rates2640 : rates3660)[i-1];
+      assert(m->intervals[0]==USB_CAM_INTERVAL(ceiling));
+      assert(usb_cam_valid_interval(m,m->default_interval));
+      for (unsigned j=0;j<m->interval_count;++j) {
+        const auto c=mode_config(i,m->intervals[j],p);
+        assert(valid_config(c));
+        assert(c.max_jpeg<=114688);
+        assert(p!=ov2640 || (!c.readout.enabled && c.xclk_mhz==24));
+        const bool fast=p==ov3660 && (m->intervals[j]<USB_CAM_INTERVAL(30) ||
+            (i==3 && m->intervals[j]<USB_CAM_INTERVAL(20)) ||
+            (i==10 && m->intervals[j]<USB_CAM_INTERVAL(15)));
+        assert(c.readout.enabled==fast);
+        uint8_t b[kControlSize]; Config decoded;
+        encode_config(c,b); assert(decode_config(b,sizeof(b),decoded) && config_equal(c,decoded));
+      }
+    }
+    assert(!usb_cam_profile_mode(p,usb_cam_profile_count(p)+1));
+    assert(mode_config(9,USB_CAM_INTERVAL(15),p).max_jpeg==114688);
+  }
+  const auto full=mode_config(11,USB_CAM_INTERVAL(15),ov3660);
+  assert(full.width==2048 && full.height==1536 && full.max_jpeg==114688);
+}
 int main() {
+  test_full_profiles();
+  test_expanded_readout_wire();
   Config config;
   assert(valid_config(config));
   assert(config_equal(config, mode_config(1, 333333)));

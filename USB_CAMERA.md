@@ -12,6 +12,83 @@ Mac and passed three close/reopen captures. See the
 [historical guide](docs/usb-camera-first-working.md) for those exact artifacts
 and measurements. Runtime mode hardware results are recorded below as tested.
 
+## Full sensor menus — implementation awaiting hardware validation
+
+The new source adds 14 standard JPEG sizes for OV2640 and 16 for OV3660.
+Sensor detection selects the menu automatically; swapping either supported sensor
+with power off does not require different firmware. Full menus require the new
+ESP capability bit `0x2`. An older ESP keeps its previous menu and 64 KiB limit.
+USB identities are `CAFE:4054` (OV2640 full) and `CAFE:4055` (OV3660 full).
+
+| Resolution | OV2640 highest request | OV3660 highest request |
+|---|---:|---:|
+| 96×96 | 60 | 120 |
+| 160×120 | 60 | 120 |
+| 176×144 | 60 | 120 |
+| 240×176 | 60 | 120 |
+| 240×240 | 60 | 120 |
+| 320×240 | 60 | 120 |
+| 400×296 | 60 | 60 |
+| 480×320 | 30 | 60 |
+| 640×480 | 30 | 60 |
+| 800×600 | 30 | 45 |
+| 1024×768 | 15 | 45 |
+| 1280×720 | 15 | 45 |
+| 1280×1024 | 15 | 15 |
+| 1600×1200 | 15 | 15 |
+| 1920×1080 | — | 20 |
+| 2048×1536 | — | 15 |
+
+**These are candidate requested rates, not measured USB delivery.** For each
+maximum, the menu includes lower rates from 120, 90, 60, 50, 45, 30, 25, 20,
+15, 10, 5, at or below that mode's maximum (20-FPS modes offer 20/15/10/5;
+15-FPS modes offer 15/10/5). Defaults remain conservative. QXGA defaults to 5.
+All Pico build variants expose the same full menus with a capable ESP.
+OBS names are **OV2640 Full MJPEG Video** and **OV3660 Full MJPEG Video**.
+
+The OV3660 faster modes use bounded crop/subsampling/timing presets, rather than
+only asking the old scaled readout to send more frames. This changes field of
+view. Crops preserve aspect ratio, and exposure is bounded by the selected frame
+period. Low light can therefore make high-rate images darker or noisier. Actual
+FPS, image quality and successful operation of these new presets still require
+hardware measurements. The datasheet lists sensor limits, not this complete
+ESP32/SPI/full-speed-USB pipeline's limits.
+
+Primary references: [OV3660 datasheet, table 2-2 and timing/exposure registers](https://files.seeedstudio.com/wiki/SeeedStudio-XIAO-ESP32S3/res/OV3660_datasheet.pdf),
+[OV2640 datasheet](https://dl.sipeed.com/MAIX/HDK/Chip_DS/OV2640-DATASHEET.pdf),
+and [Espressif sensor drivers](https://github.com/espressif/esp32-camera/tree/master/sensors).
+The measurements below belong to the preserved firmware, **not** these new
+fast presets or the two-buffer implementation.
+
+Full profiles allow two 112 KiB JPEG slots (old profiles remain capped at 64 KiB).
+The UART build uses 243,372 of 262,144 bytes of RAM at link time; stack/heap runtime
+headroom still needs soak testing. The 720 KiB/s budget applies to ordinary modes;
+UXGA/FHD/QXGA allow the entire slot and may deliver below the requested rate.
+Larger slots address the previous QXGA overflow cause but do not establish that
+every detailed scene fits, even at maximum compression. Oversized frames are
+counted, never truncated or presented as successful video.
+
+The OV2640 full profile starts at the previously tested 24 MHz XCLK; calibrated
+OV3660 timing remains 20 MHz. The ESP accepts a bounded optional readout block
+in CFG2 bytes 82–101, checks geometry/clock/exposure before changes, verifies
+critical sensor registers, and restores sensor defaults when leaving fast mode.
+Further valid timing tuning happens on the Pico, without another ESP upload.
+
+Advanced CDC controls on the OV3660 full profile: `readout_enabled`,
+`readout_binning`, `readout_scale` (0/1), `readout_x_increment` and
+`readout_y_increment` (decimal 17/49/113), and `readout_start_x`, `start_y`,
+`end_x`, `end_y`, `offset_x`, `offset_y`, `total_x`, `total_y` (each with the
+`readout_` prefix). Disable readout before staging interdependent fields; enabling
+it validates the complete combination. `defaults` restores the current mode's
+recipe, timing, quality and controls. Night extension (`aec2=1`) and exposure
+beyond VTS−4 are rejected in raw readout. An incompatible manual crop is reset
+on a resolution change and counted in `readout_resets`. Invalid combinations
+with manual clock/exposure overrides reject the UVC selection atomically.
+
+Deploy Pico first and verify the old ESP still streams, then perform one reviewed
+ESP upload. Validate all geometries, high-rate requests, repeated switching,
+close/reopen and long captures before describing any new mode as reliable.
+
 ## Wiring
 
 GPIO numbers below are board labels, not physical connector positions.
@@ -50,15 +127,13 @@ For a full-size Raspberry Pi Pico use `pico_camera` instead of `zero_camera`.
 The native Pico SDK platform, GCC toolchain and TinyUSB remain pinned in the
 PlatformIO files. The older fixed-resolution environments live in the checkpoint.
 
-The ESP32 firmware accepts SDK JPEG geometries through 2048x1536, subject to the
-detected sensor and 64 KiB transport limit. The Pico advertises only the tested
-subset: through 1600x1200 for OV2640 and 1920x1080 for OV3660. Later Pico firmware
-can adjust menus, requested rates and settings within this contract.
+The ESP32 firmware accepts standard SDK JPEG geometries through 2048x1536,
+subject to the detected sensor and 112 KiB limit. The capability check preserves
+the earlier menus and 64 KiB limit until this ESP firmware is installed.
 
 1. Update Pico first: enter BOOTSEL (hold BOOT, tap RESET, release BOOT), then run
-   `pio run -d pico -e zero_camera -t upload`. The new Pico reads both the earlier
-   runtime headers and the new diagnostic extension; the old Pico rejects the
-   new extension.
+   `pio run -d pico -e zero_camera -t upload`. The new Pico reads earlier runtime
+   headers and selects its full menu only after the ESP advertises support.
 2. Disconnect Pico READY from ESP GPIO3. Leave the new GP7-to-GPIO2 wire
    disconnected during flashing: ESP GPIO2 must be low or floating to enter its
    serial bootloader. Connect the serial programmer, put GPIO0 to GND and reset.
@@ -80,7 +155,8 @@ ESP contract can still require a future ESP upload.
 
 ## OBS resolution and FPS choices
 
-Select **OV2640 MJPEG Video** or **OV3660 MJPEG Video**, matching the fitted sensor.
+Select the sensor's **Full MJPEG Video** device for the new menu above.
+The previous firmware exposes **OV2640 MJPEG Video** or **OV3660 MJPEG Video**.
 Older firmware may show **MJPEG Video** / **ESP32 POV Camera**. Where the host
 application offers it, use custom resolution/FPS rather than a fixed preset.
 Changing a mode briefly pauses capture while the real sensor is reconfigured.
@@ -127,7 +203,7 @@ The UXGA repair below removes a reproduced size-budget freeze at requested
 15 FPS. That request is still not a guarantee of 15 delivered frames per second.
 These bench results do not certify a moving POV scene or constant FPS in all lighting.
 
-JPEG data stays compressed from the sensor to USB. Three fixed 64 KiB buffers
+In the preserved firmware, JPEG stays compressed from sensor to USB. Three fixed 64 KiB buffers
 bound Pico RAM. The selected interval also sets a conservative 720 KiB/s frame
 budget, except UXGA/FHD, which always use the full 64 KiB slot. If a frame exceeds
 its budget, it is counted and compression increases

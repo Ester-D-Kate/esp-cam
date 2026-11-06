@@ -28,6 +28,8 @@ unsigned selected_mode = 0;
 usb_cam::ProfileDiscovery profile_discovery;
 uint32_t stale_frames = 0;
 bool custom_quality = false;
+bool custom_readout = false;
+uint32_t readout_resets = 0;
 bool report_requested = false;
 usb_cam::ConfigRetry config_retry;
 uint32_t config_retries = 0;
@@ -70,7 +72,8 @@ void commands() {
     if (result == usb_cam::CommandResult::Changed) {
       config_retry.new_request(receiver_stats().status_packets);
       if (strncmp(reader.line(), "set quality ", 12) == 0) custom_quality = true;
-      if (strcmp(reader.line(), "defaults") == 0) custom_quality = false;
+      if (strncmp(reader.line(), "set readout_", 12) == 0) custom_readout = true;
+      if (strcmp(reader.line(), "defaults") == 0) custom_quality = custom_readout = false;
       receiver_configure(desired);
     }
     report_requested = true;
@@ -121,7 +124,7 @@ void diagnostics() {
     control_prefix[2 * i + 1] = hex[rx.sender.control_prefix[i] & 15];
   }
   control_prefix[32] = '\0';
-  char line[1792];
+  static char line[2048]; // Keep formatted diagnostics off the 4 KiB USB-core stack.
   static_assert(CFG_TUD_CDC_TX_BUFSIZE >= sizeof(line), "Diagnostics must fit the CDC FIFO");
   const int count = snprintf(line, sizeof(line),
       "{\"profile\":%u,\"mode\":%u,\"width\":%u,\"height\":%u,\"target_fps\":%u,"
@@ -141,7 +144,10 @@ void diagnostics() {
       "\"camera_starts\":%lu,\"sensor_resets\":%lu,\"xclk_hz\":%lu,"
       "\"config_retries\":%lu,\"config_retry_attempts\":%u,\"spi_gpio\":%u,\"usb_gap_us\":%lu,"
       "\"capabilities\":%lu,\"pll_multiplier\":%u,\"pll_sys_div\":%u,"
-      "\"pll_pre_div\":%u,\"pll_root_2x\":%u,\"pll_seld5\":%u,\"pclk_div\":%u}\r\n",
+      "\"pll_pre_div\":%u,\"pll_root_2x\":%u,\"pll_seld5\":%u,\"pclk_div\":%u,"
+      "\"readout_enabled\":%u,\"readout_total_x\":%u,\"readout_total_y\":%u,"
+      "\"readout_x_increment\":%u,\"readout_y_increment\":%u,\"readout_resets\":%lu,"
+      "\"frame_capacity\":%lu,\"max_jpeg\":%lu}\r\n",
       unsigned(usb_cam_usb_profile()), selected_mode, desired.width, desired.height, unsigned(10000000u / desired.interval_100ns),
       (unsigned long)rx_fps_x10, (unsigned long)usb_fps_x10,
       (unsigned long)rx.frames, (unsigned long)completed, (unsigned long)rx.invalid,
@@ -165,7 +171,10 @@ void diagnostics() {
       (unsigned long)config_retries, config_retry.attempts(),
       unsigned(gpio_get_all() & 0x8fu), (unsigned long)usb_gap_us,
       (unsigned long)rx.sender.capabilities, desired.pll.multiplier, desired.pll.sys_div,
-      desired.pll.pre_div, desired.pll.root_2x, desired.pll.seld5, desired.pll.pclk_div);
+      desired.pll.pre_div, desired.pll.root_2x, desired.pll.seld5, desired.pll.pclk_div,
+      unsigned(desired.readout.enabled),desired.readout.total_x,desired.readout.total_y,
+      desired.readout.x_increment,desired.readout.y_increment,(unsigned long)readout_resets,
+      (unsigned long)usb_cam_profile_capacity(usb_cam_usb_profile()),(unsigned long)desired.max_jpeg);
   // A closed/slow serial monitor must never stall the UVC stream.
   if (count > 0 && size_t(count) < sizeof(line) && tud_cdc_write_available() >= uint32_t(count)) {
     tud_cdc_write(line, uint32_t(count));
@@ -181,18 +190,26 @@ extern "C" void tud_video_frame_xfer_complete_cb(uint_fast8_t control, uint_fast
   ++completed;
 }
 
+extern "C" int usb_cam_validate_commit_cb(const video_probe_and_commit_control_t* parameters) {
+  usb_cam::Config next;
+  bool reset=false;
+  return parameters->bFormatIndex==1 && usb_cam::select_mode(parameters->bFrameIndex,
+      parameters->dwFrameInterval,usb_cam_usb_profile(),desired,custom_quality,
+      custom_readout,next,reset) ? VIDEO_ERROR_NONE : VIDEO_ERROR_OUT_OF_RANGE;
+}
+
 extern "C" int tud_video_commit_cb(uint_fast8_t control, uint_fast8_t stream,
                                    const video_probe_and_commit_control_t* parameters) {
   const UsbCamMode* mode = usb_cam_profile_mode(usb_cam_usb_profile(), parameters->bFrameIndex);
   if (control != 0 || stream != 0 || parameters->bFormatIndex != 1 ||
       !usb_cam_valid_interval(mode, parameters->dwFrameInterval)) return VIDEO_ERROR_OUT_OF_RANGE;
+  usb_cam::Config next;
+  bool readout_reset=false;
+  if (!usb_cam::select_mode(parameters->bFrameIndex,parameters->dwFrameInterval,
+      usb_cam_usb_profile(),desired,custom_quality,custom_readout,next,readout_reset))
+    return VIDEO_ERROR_OUT_OF_RANGE;
+  if (readout_reset) { custom_readout=false; ++readout_resets; }
   usb_frame_gaps.reset();
-  usb_cam::Config next = usb_cam::mode_config(parameters->bFrameIndex, parameters->dwFrameInterval, usb_cam_usb_profile());
-  next.generation = desired.generation;
-  next.xclk_mhz = desired.xclk_mhz;
-  next.pll = desired.pll;
-  memcpy(next.settings, desired.settings, sizeof(next.settings));
-  if (custom_quality) next.quality = desired.quality;
   if (!usb_cam::config_equal(next, desired)) {
     next.generation++;
     desired = next;
@@ -251,7 +268,7 @@ int main() {
         desired = usb_cam::profile_defaults(next_profile);
         desired.generation = generation;
         selected_mode = next_profile == USB_CAM_PROFILE_DISCOVERY ? 0 : USB_CAM_DEFAULT_MODE;
-        custom_quality = false;
+        custom_quality = custom_readout = false;
         config_retry.new_request(identity_rx.status_packets);
         receiver_configure(desired);
       }

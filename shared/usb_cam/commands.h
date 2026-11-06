@@ -10,13 +10,14 @@ inline CommandResult apply_command(const char* line, Config& current, UsbCamProf
   if (strcmp(line, "status") == 0) return CommandResult::Status;
   Config next = current;
   if (strcmp(line, "defaults") == 0) {
-    next = profile_defaults(profile);
-    next.width = current.width; next.height = current.height;
-    next.interval_100ns = current.interval_100ns; next.max_jpeg = current.max_jpeg;
+    bool found=false;
     for (unsigned i = 1; i <= usb_cam_profile_count(profile); ++i) {
       const auto* mode = usb_cam_profile_mode(profile, i);
-      if (mode->width == current.width && mode->height == current.height) next.quality = mode->quality;
+      if (mode->width == current.width && mode->height == current.height) {
+        next=mode_config(i,current.interval_100ns,profile); found=true; break;
+      }
     }
+    if (!found) return CommandResult::Invalid;
   } else {
     if (strncmp(line, "set ", 4) != 0) return CommandResult::Invalid;
     const char* name = line + 4;
@@ -39,13 +40,33 @@ inline CommandResult apply_command(const char* line, Config& current, UsbCamProf
       next.xclk_mhz = uint8_t(value);
     } else if (named("pll_multiplier") || named("pll_sys_div") || named("pll_pre_div") ||
                named("pll_root_2x") || named("pll_seld5") || named("pclk_div")) {
-      if (profile != USB_CAM_PROFILE_OV3660 || use_default || value < 0 || value > 31) return CommandResult::Invalid;
+      if ((profile != USB_CAM_PROFILE_OV3660 && profile != USB_CAM_PROFILE_OV3660_FULL) ||
+          use_default || value < 0 || value > 31) return CommandResult::Invalid;
       if (named("pll_multiplier")) next.pll.multiplier = uint8_t(value);
       else if (named("pll_sys_div")) next.pll.sys_div = uint8_t(value);
       else if (named("pll_pre_div")) next.pll.pre_div = uint8_t(value);
       else if (named("pll_root_2x")) next.pll.root_2x = uint8_t(value);
       else if (named("pll_seld5")) next.pll.seld5 = uint8_t(value);
       else next.pll.pclk_div = uint8_t(value);
+    } else if (size > 8 && memcmp(name,"readout_",8)==0) {
+      if (profile!=USB_CAM_PROFILE_OV3660_FULL || use_default || value<0 || value>4095)
+        return CommandResult::Invalid;
+      if (named("readout_enabled") || named("readout_binning") || named("readout_scale")) {
+        if (value>1) return CommandResult::Invalid;
+        if (named("readout_enabled")) next.readout.enabled=value;
+        else if (named("readout_binning")) next.readout.binning=value;
+        else next.readout.scale=value;
+      } else if (named("readout_x_increment") || named("readout_y_increment")) {
+        if (value!=0x11 && value!=0x31 && value!=0x71) return CommandResult::Invalid;
+        if (named("readout_x_increment")) next.readout.x_increment=uint8_t(value);
+        else next.readout.y_increment=uint8_t(value);
+      } else {
+        bool found=false;
+#define USB_CAM_SET_READOUT(field) if (named("readout_" #field)) { next.readout.field=uint16_t(value); found=true; }
+        USB_CAM_READOUT_FIELDS(USB_CAM_SET_READOUT)
+#undef USB_CAM_SET_READOUT
+        if (!found) return CommandResult::Invalid;
+      }
     } else {
       bool found = false;
       for (unsigned i = 0; i < kSettingCount; ++i) {
@@ -59,6 +80,26 @@ inline CommandResult apply_command(const char* line, Config& current, UsbCamProf
   next.generation = current.generation + 1;
   current = next;
   return CommandResult::Changed;
+}
+// Merge host selection with explicit controls before publishing any new state.
+// A crop override that cannot fit a new resolution falls back to its preset.
+inline bool select_mode(unsigned index, uint32_t interval, UsbCamProfile profile,
+    const Config& current, bool custom_quality, bool custom_readout,
+    Config& out, bool& readout_reset) {
+  Config next=mode_config(index,interval,profile);
+  next.generation=current.generation;
+  next.xclk_mhz=current.xclk_mhz; next.pll=current.pll;
+  memcpy(next.settings,current.settings,sizeof(next.settings));
+  if (custom_quality) next.quality=current.quality;
+  bool reset=false;
+  if (custom_readout) {
+    const Readout preset=next.readout;
+    next.readout=current.readout;
+    if (!valid_readout(next)) { next.readout=preset; reset=true; }
+  }
+  if (!valid_config(next)) return false;
+  out=next; readout_reset=reset;
+  return true;
 }
 class LineReader {
  public:

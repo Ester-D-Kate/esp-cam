@@ -14,8 +14,13 @@ enum { VIDEO_CONTROL, VIDEO_STREAM, CDC_CONTROL, CDC_DATA, INTERFACE_COUNT };
 #define LE_INTERVALS_2(a, b) U32_TO_U8S_LE(a), U32_TO_U8S_LE(b)
 #define LE_INTERVALS_3(a, b, c) U32_TO_U8S_LE(a), U32_TO_U8S_LE(b), U32_TO_U8S_LE(c)
 #define LE_INTERVALS_4(a, b, c, d) U32_TO_U8S_LE(a), LE_INTERVALS_3(b, c, d)
+#define LE_INTERVALS_5(a, ...) U32_TO_U8S_LE(a), LE_INTERVALS_4(__VA_ARGS__)
 #define LE_INTERVALS_6(a, b, c, d, e, f) LE_INTERVALS_3(a, b, c), LE_INTERVALS_3(d, e, f)
 #define LE_INTERVALS_7(a, ...) U32_TO_U8S_LE(a), LE_INTERVALS_6(__VA_ARGS__)
+#define LE_INTERVALS_8(a, ...) U32_TO_U8S_LE(a), LE_INTERVALS_7(__VA_ARGS__)
+#define LE_INTERVALS_9(a, ...) U32_TO_U8S_LE(a), LE_INTERVALS_8(__VA_ARGS__)
+#define LE_INTERVALS_10(a, ...) U32_TO_U8S_LE(a), LE_INTERVALS_9(__VA_ARGS__)
+#define LE_INTERVALS_11(a, ...) U32_TO_U8S_LE(a), LE_INTERVALS_10(__VA_ARGS__)
 #define JOIN_INNER(a, b) a##b
 #define JOIN(a, b) JOIN_INNER(a, b)
 #define LE_INTERVALS(...) JOIN(LE_INTERVALS_, TU_ARGS_NUM(__VA_ARGS__))(__VA_ARGS__)
@@ -37,14 +42,19 @@ enum { VIDEO_CONTROL, VIDEO_STREAM, CDC_CONTROL, CDC_DATA, INTERFACE_COUNT };
     .iSerialNumber = 3, .bNumConfigurations = 1 }
 static const tusb_desc_device_t devices[] = {
     DEVICE_DESCRIPTOR(0x4050), DEVICE_DESCRIPTOR(0x4051),
-    DEVICE_DESCRIPTOR(0x4052), DEVICE_DESCRIPTOR(0x4053)};
+    DEVICE_DESCRIPTOR(0x4052), DEVICE_DESCRIPTOR(0x4053),
+    DEVICE_DESCRIPTOR(0x4054), DEVICE_DESCRIPTOR(0x4055)};
 #define FIRST_INTERVAL(a, ...) a
-#define FRAME_DESCRIPTOR(id, w, h, q, fps, ...) \
+#define FRAME_WITH_LIMITS(capacity, bitrate, id, w, h, q, fps, ...) \
     26 + 4 * TU_ARGS_NUM(__VA_ARGS__), TUSB_DESC_CS_INTERFACE, VIDEO_CS_ITF_VS_FRAME_MJPEG, \
     id, 0, U16_TO_U8S_LE(w), U16_TO_U8S_LE(h), U32_TO_U8S_LE(8 * 5), \
-    U32_TO_U8S_LE(USB_CAM_MAX_BITRATE_INTERVAL(w, h, FIRST_INTERVAL(__VA_ARGS__))), U32_TO_U8S_LE(USB_CAM_BUFFER_BYTES), \
+    U32_TO_U8S_LE(bitrate), U32_TO_U8S_LE(capacity), \
     U32_TO_U8S_LE(USB_CAM_INTERVAL(fps)), TU_ARGS_NUM(__VA_ARGS__), LE_INTERVALS(__VA_ARGS__),
-#define CONFIGURATION(MODES, COUNT) \
+#define FRAME_DESCRIPTOR(id, w, h, q, fps, ...) \
+    FRAME_WITH_LIMITS(USB_CAM_LEGACY_BUFFER_BYTES, USB_CAM_MAX_BITRATE_INTERVAL(w,h,FIRST_INTERVAL(__VA_ARGS__)), id,w,h,q,fps,__VA_ARGS__)
+#define FULL_FRAME_DESCRIPTOR(id, w, h, q, fps, ...) \
+    FRAME_WITH_LIMITS(USB_CAM_BUFFER_BYTES, USB_CAM_BYTE_BUDGET*8u, id,w,h,q,fps,__VA_ARGS__)
+#define CONFIGURATION(MODES, COUNT, FRAME) \
     TUD_CONFIG_DESCRIPTOR(1, INTERFACE_COUNT, 0, CONFIG_LENGTH(MODES), 0, 100), \
     TUD_VIDEO_DESC_IAD(VIDEO_CONTROL, 2, 4), \
     TUD_VIDEO_DESC_STD_VC(VIDEO_CONTROL, 0, 4), \
@@ -59,27 +69,33 @@ static const tusb_desc_device_t devices[] = {
         TUD_VIDEO_DESC_CS_VS_COLOR_MATCHING_LEN, \
         VIDEO_ENDPOINT, 0, 2, 0, 0, 0, 0), \
     TUD_VIDEO_DESC_CS_VS_FMT_MJPEG(1, COUNT, 0, USB_CAM_DEFAULT_MODE, 0, 0, 0, 0), \
-    MODES(FRAME_DESCRIPTOR) \
+    MODES(FRAME) \
     TUD_VIDEO_DESC_CS_VS_COLOR_MATCHING(0, 0, 0), \
     TUD_VIDEO_DESC_EP_BULK(VIDEO_ENDPOINT, 64, 0), \
     TUD_CDC_DESCRIPTOR(CDC_CONTROL, 5, 0x82, 8, 0x03, 0x83, 64)
-static const uint8_t configuration_ov2640[] = {CONFIGURATION(USB_CAM_MODES, USB_CAM_MODE_COUNT)};
-static const uint8_t configuration_ov3660[] = {CONFIGURATION(USB_CAM_OV3660_MODES, USB_CAM_OV3660_MODE_COUNT)};
+static const uint8_t configuration_ov2640[] = {CONFIGURATION(USB_CAM_MODES, USB_CAM_MODE_COUNT, FRAME_DESCRIPTOR)};
+static const uint8_t configuration_ov3660[] = {CONFIGURATION(USB_CAM_OV3660_MODES, USB_CAM_OV3660_MODE_COUNT, FRAME_DESCRIPTOR)};
+static const uint8_t configuration_ov2640_full[] = {CONFIGURATION(USB_CAM_OV2640_FULL_MODES, USB_CAM_OV2640_FULL_MODE_COUNT, FULL_FRAME_DESCRIPTOR)};
+static const uint8_t configuration_ov3660_full[] = {CONFIGURATION(USB_CAM_OV3660_FULL_MODES, USB_CAM_OV3660_FULL_MODE_COUNT, FULL_FRAME_DESCRIPTOR)};
 static const uint8_t configuration_discovery[] = {
     TUD_CONFIG_DESCRIPTOR(1, 2, 0, TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN, 0, 100),
     TUD_CDC_DESCRIPTOR(0, 5, 0x82, 8, 0x03, 0x83, 64)};
 _Static_assert(sizeof(configuration_ov2640) == CONFIG_LENGTH(USB_CAM_MODES), "OV2640 length mismatch");
 _Static_assert(sizeof(configuration_ov3660) == CONFIG_LENGTH(USB_CAM_OV3660_MODES), "OV3660 length mismatch");
+_Static_assert(sizeof(configuration_ov2640_full) == CONFIG_LENGTH(USB_CAM_OV2640_FULL_MODES), "Full OV2640 length mismatch");
+_Static_assert(sizeof(configuration_ov3660_full) == CONFIG_LENGTH(USB_CAM_OV3660_FULL_MODES), "Full OV3660 length mismatch");
 
 static UsbCamProfile active_profile = USB_CAM_PROFILE_DISCOVERY;
 UsbCamProfile usb_cam_usb_profile(void) { return active_profile; }
 void usb_cam_usb_select_profile(UsbCamProfile profile) {
-  active_profile = (unsigned)profile <= USB_CAM_PROFILE_OV3660 ? profile : USB_CAM_PROFILE_DISCOVERY;
+  active_profile = (unsigned)profile <= USB_CAM_PROFILE_OV3660_FULL ? profile : USB_CAM_PROFILE_DISCOVERY;
 }
 const uint8_t* tud_descriptor_device_cb(void) { return (const uint8_t*)&devices[active_profile]; }
 const uint8_t* tud_descriptor_configuration_cb(uint8_t index) {
   if (index != 0) return NULL;
   if (active_profile == USB_CAM_PROFILE_DISCOVERY) return configuration_discovery;
+  if (active_profile == USB_CAM_PROFILE_OV2640_FULL) return configuration_ov2640_full;
+  if (active_profile == USB_CAM_PROFILE_OV3660_FULL) return configuration_ov3660_full;
   return active_profile == USB_CAM_PROFILE_OV3660 ? configuration_ov3660 : configuration_ov2640;
 }
 
@@ -97,9 +113,11 @@ const uint16_t* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     if (index >= sizeof(strings) / sizeof(strings[0])) return NULL;
     if (index == 3) pico_get_unique_board_id_string(serial, sizeof(serial));
     static const char* const products[] = {"ESP32 Camera Discovery", "ESP32 OV2640 USB Camera",
-        "ESP32 OV3660 Legacy Camera", "ESP32 OV3660 USB Camera"};
+        "ESP32 OV3660 Legacy Camera", "ESP32 OV3660 USB Camera",
+        "ESP32 OV2640 Full Camera", "ESP32 OV3660 Full Camera"};
     static const char* const video_names[] = {"Sensor unavailable", "OV2640 MJPEG Video",
-        "OV3660 Legacy MJPEG Video", "OV3660 MJPEG Video"};
+        "OV3660 Legacy MJPEG Video", "OV3660 MJPEG Video",
+        "OV2640 Full MJPEG Video", "OV3660 Full MJPEG Video"};
     const char* string = index == 2 ? products[active_profile] :
         index == 4 ? video_names[active_profile] : strings[index];
     count = strlen(string);
