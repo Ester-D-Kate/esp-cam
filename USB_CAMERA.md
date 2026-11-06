@@ -69,6 +69,10 @@ its 16 KiB estimate rejected every JPEG even at quality 50. The Pico now request
 the actual slot capacity instead, so transport backpressure can reduce FPS
 without this artificial size-budget freeze. Full-profile descriptors bound the
 maximum data rate by the 8 Mbit/s SPI clock; protocol overhead lowers throughput.
+The original SVGA/XGA fast candidate also timed out in XGA capture. A native
+1024×768 crop (sensor window 512,384–1567,1163, HTS1512/VTS800) replaced its
+full-array binned readout after successful hardware checks. Fast SVGA/XGA modes
+therefore use a narrower view than their normal presets.
 Larger slots address the previous QXGA overflow cause but do not establish that
 every detailed scene fits, even at maximum compression. Oversized frames are
 counted, never truncated or presented as successful video.

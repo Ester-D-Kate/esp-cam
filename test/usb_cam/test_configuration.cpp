@@ -71,6 +71,15 @@ static void test_full_profiles() {
   }
   const auto full=mode_config(11,USB_CAM_INTERVAL(15),ov3660);
   assert(full.width==2048 && full.height==1536 && full.max_jpeg==114688);
+  // Hardware: compressed XGA at full-array/2x sampling and HTS1512 times out.
+  // The tested native crop supplies XGA/SVGA fast modes without that readout.
+  for (unsigned i : {2u,7u}) {
+    const auto fast=mode_config(i,USB_CAM_INTERVAL(45),ov3660);
+    assert(fast.readout.enabled && !fast.readout.binning);
+    assert(fast.readout.x_increment==0x11 && fast.readout.total_y==800);
+    assert(fast.readout.start_x==512 && fast.readout.start_y==384);
+    assert(fast.readout.end_x==1567 && fast.readout.end_y==1163);
+  }
 }
 int main() {
   test_full_profiles();

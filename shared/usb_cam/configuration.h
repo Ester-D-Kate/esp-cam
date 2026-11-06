@@ -251,8 +251,10 @@ inline Readout mode_readout(uint16_t width, uint16_t height, uint32_t interval) 
     divisor=fast ? 4 : 2; r.offset_x=fast ? 4 : 8; r.offset_y=fast ? 1 : 3;
     r.total_x=1600; r.total_y=fast ? 278 : 556;
   } else if (width <= 1024 && height <= 768 && interval < USB_CAM_INTERVAL(30)) {
-    max_width=1024; max_height=768; divisor=2;
-    r.offset_x=8; r.offset_y=3; r.total_x=1512; r.total_y=784;
+    // The full-array binned candidate timed out on hardware at this HTS.
+    // Use the verified native crop; fast modes have a narrower field of view.
+    max_width=1024; max_height=768;
+    r.total_x=1512; r.total_y=800;
   } else if (width == 1280 && height == 720 && interval < USB_CAM_INTERVAL(20)) {
     max_width=1280; max_height=720;
     r.total_x=1512; r.total_y=784;
