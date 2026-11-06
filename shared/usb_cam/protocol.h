@@ -4,7 +4,7 @@
 namespace usb_cam {
 constexpr size_t kHeaderSize = kControlSize;
 constexpr size_t kPacketCapacity = kHeaderSize + kMaxJpeg;
-constexpr uint32_t kSpiHz = 8000000;
+constexpr uint32_t kSpiHz = USB_CAM_SPI_HZ;
 constexpr uint32_t kControlSpiHz = 1000000;
 enum class PacketKind : uint8_t { Status = 0, Frame = 1 };
 struct Header {

@@ -128,6 +128,7 @@ inline bool valid_readout(const Config& c) {
 }
 inline Config profile_defaults(UsbCamProfile profile) {
   Config c;
+  if (usb_cam_full_profile(profile)) c.max_jpeg=usb_cam_profile_capacity(profile);
   if (profile == USB_CAM_PROFILE_OV2640_FULL) c.xclk_mhz = 24;
   if (profile == USB_CAM_PROFILE_OV3660 || profile == USB_CAM_PROFILE_OV3660_FULL) {
     // Hardware-validated: 20 MHz XCLK, 53.33 MHz SYSCLK, 9.70 MHz PCLK.
@@ -282,10 +283,11 @@ inline Config mode_config(unsigned index, uint32_t interval, UsbCamProfile profi
   const uint32_t budget = uint32_t(uint64_t(USB_CAM_BYTE_BUDGET) * interval / 10000000);
   const uint32_t capacity=usb_cam_profile_capacity(profile);
   c.max_jpeg = budget < capacity ? budget : capacity;
-  // UXGA can exceed the 15-FPS budget even at maximum allowed compression.
-  // Accept frames that fit our existing slots instead of freezing indefinitely.
-  // The actual delivered rate may fall below the requested rate for large JPEGs.
-  if (USB_CAM_USES_FULL_SLOT(c.width, c.height)) c.max_jpeg = capacity;
+  // On hardware, HD45 exceeded its 16 KiB rate estimate even at quality 50,
+  // discarding every frame. Full profiles accept any JPEG that fits the slot;
+  // backpressure reduces delivered FPS when a scene exceeds link bandwidth.
+  // Preserve the previous limits for legacy ESP firmware/profile banks.
+  if (usb_cam_full_profile(profile) || USB_CAM_USES_FULL_SLOT(c.width, c.height)) c.max_jpeg = capacity;
   if (profile == USB_CAM_PROFILE_OV3660_FULL) c.readout=mode_readout(c.width,c.height,interval);
   return c;
 }

@@ -62,8 +62,13 @@ fast presets or the two-buffer implementation.
 
 Full profiles allow two 112 KiB JPEG slots (old profiles remain capped at 64 KiB).
 The UART build uses 243,372 of 262,144 bytes of RAM at link time; stack/heap runtime
-headroom still needs soak testing. The 720 KiB/s budget applies to ordinary modes;
-UXGA/FHD/QXGA allow the entire slot and may deliver below the requested rate.
+headroom still needs soak testing. All full-profile modes allow the entire slot
+and may deliver below the requested rate; legacy profiles preserve their earlier
+720 KiB/s estimates and UXGA/FHD exceptions. A hardware test of HD45 showed that
+its 16 KiB estimate rejected every JPEG even at quality 50. The Pico now requests
+the actual slot capacity instead, so transport backpressure can reduce FPS
+without this artificial size-budget freeze. Full-profile descriptors bound the
+maximum data rate by the 8 Mbit/s SPI clock; protocol overhead lowers throughput.
 Larger slots address the previous QXGA overflow cause but do not establish that
 every detailed scene fits, even at maximum compression. Oversized frames are
 counted, never truncated or presented as successful video.

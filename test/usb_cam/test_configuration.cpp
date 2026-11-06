@@ -45,6 +45,7 @@ static void test_full_profiles() {
   const unsigned rates2640[] = {30,30,15,60,60,30,15,15,15,60,60,60,60,60};
   const unsigned rates3660[] = {60,45,45,120,120,60,45,15,15,20,15,120,120,120,120,60};
   for (const auto p : {ov2640,ov3660}) {
+    assert(profile_defaults(p).max_jpeg==114688);
     for (unsigned i=1;i<=usb_cam_profile_count(p);++i) {
       const auto* m=usb_cam_profile_mode(p,i);
       const unsigned ceiling=(p==ov2640 ? rates2640 : rates3660)[i-1];
@@ -53,7 +54,9 @@ static void test_full_profiles() {
       for (unsigned j=0;j<m->interval_count;++j) {
         const auto c=mode_config(i,m->intervals[j],p);
         assert(valid_config(c));
-        assert(c.max_jpeg<=114688);
+        // A requested FPS must not reject every frame when JPEGs exceed its
+        // byte-rate estimate. Deliver complete frames at the attainable rate.
+        assert(c.max_jpeg==114688);
         assert(p!=ov2640 || (!c.readout.enabled && c.xclk_mhz==24));
         const bool fast=p==ov3660 && (m->intervals[j]<USB_CAM_INTERVAL(30) ||
             (i==3 && m->intervals[j]<USB_CAM_INTERVAL(20)) ||

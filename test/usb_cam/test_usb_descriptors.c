@@ -51,7 +51,7 @@ static void check_profile(UsbCamProfile profile) {
       assert(le32(d + 17) == (full ? 114688 : 65536));
       // UXGA may send 65536 bytes per 666666 * 100 ns. Advertise the
       // corresponding maximum rounded up, rather than the old 720 KiB/s cap.
-      assert(le32(d + 13) == (!full && video_frames >= 9 ? 7864328u : 5898240u));
+      assert(le32(d + 13) == (full ? 8000000u : video_frames >= 9 ? 7864328u : 5898240u));
       assert(d[25] >= 2 && d[0] == 26 + d[25] * 4);
       uint32_t previous = 0;
       for (unsigned n = 0; n < d[25]; ++n) {
