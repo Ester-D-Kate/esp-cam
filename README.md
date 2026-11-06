@@ -174,7 +174,7 @@ until the ESP is updated. New ESP button headers require the new Pico decoder.
 Future PC-side shortcut mappings need no firmware upload. The video sensor
 presets, SPI clocks, JPEG limits and requested frame rates are unchanged.
 
-The same physical USB device now has three independent interfaces:
+The same physical USB device now provides three USB functions:
 
 - UVC camera: **OV2640 Full MJPEG Video** or **OV3660 Full MJPEG Video**.
 - CDC **Camera Diagnostics**: existing settings/log commands.
@@ -219,9 +219,9 @@ means the button is already held. The initial held-at-boot button follows the
 existing debounce behavior, but opening/reopening a reader does not synthesize
 an action for a button already held.
 
-Use one action reader at a time. On open, the example requests a fresh button session, then reads a
-snapshot after that request completes; this discards offline history instead of replaying stale
-shortcuts. A second reader requesting resync also cancels the first reader's
+Use one action reader at a time. On open, the example requests a fresh button
+session, then reads a snapshot after that request completes. This discards offline
+history instead of replaying stale shortcuts. A second reader requesting resync also cancels the first reader's
 pending gesture. Reconnects stay with the first selected camera serial number.
 On Linux the user needs access to this device's `hidraw` node;
 use a device-specific udev rule rather than running the application as root.
@@ -294,3 +294,31 @@ FPS. After both uploads, test presses, releases, holds and rapid double/triple
 presses with OBS active; compare high-rate and high-resolution captures with HID
 reading and unread. Existing camera-only measurements in `USB_CAMERA.md` remain
 baseline evidence, not measurements of the newly added physical button path.
+
+### Composite Pico compatibility check — 2026-11-06
+
+The reviewed Pico HID/UVC build (`0b815e1`, `zero_camera_uart`) was uploaded with
+flash verification and tested with the **previous camera-only ESP** and OV2640.
+macOS enumerated both the UVC camera and vendor HID after accessory approval.
+Twenty HID open/resync/close cycles returned valid unavailable/released state,
+as expected until the ESP button firmware is installed.
+
+Each capture below ran for 20 seconds using FFmpeg/AVFoundation UYVY, with late
+frame dropping disabled; FPS excludes the first three seconds of mode settling.
+
+| Mode / requested FPS | HID reader open | HID reader closed |
+|---|---:|---:|
+| 320×240 / 60 | 58.71 FPS | 58.56 FPS |
+| 640×480 / 30 | 29.36 FPS | 29.40 FPS |
+| 1600×1200 / 15 | 11.27 FPS | 11.27 FPS |
+
+All six captures decoded the requested geometry, with no steady-state increases
+in capture/SPI errors, oversized frames, sequence gaps, replacement frames or USB
+restarts, and no decoded-frame gap over 250 ms (largest: 126.1 ms). USB recovery
+can still run between capture sessions. Scene/exposure affect FPS; these figures
+do not establish a full-resolution improvement over the earlier baseline.
+
+This verifies composite-Pico compatibility and HID control traffic alongside
+video. **Physical press/release delivery and active-button video timing remain
+pending the ESP upload.** OV3660 presets are unchanged; it was not attached for
+this check. Do not treat this table as a new OV3660 hardware measurement.
