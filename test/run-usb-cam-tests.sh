@@ -15,7 +15,7 @@ fi
   -I"$project_dir/pico/src" "$project_dir/test/usb_cam/test_iso_restart.c" \
   -o "$project_dir/.pio/host-tests/iso-restart-tests"
 "$project_dir/.pio/host-tests/iso-restart-tests"
-for name in protocol configuration runtime_protocol commands config_retry; do
+for name in protocol configuration runtime_protocol commands config_retry button; do
   "${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
     -I"$project_dir/shared" "$project_dir/test/usb_cam/test_$name.cpp" \
     -o "$project_dir/.pio/host-tests/$name-tests"
@@ -51,3 +51,9 @@ for fast in 0 1; do
     "$project_dir/.pio/host-tests/$name-tests"
   done
 done
+
+"${CXX:-clang++}" -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -I"$project_dir/test/usb_cam/stubs" -I"$project_dir/shared" -I"$project_dir/src/usb_cam" \
+  "$project_dir/src/usb_cam/button_input.cpp" "$project_dir/test/usb_cam/test_button_input.cpp" \
+  -o "$project_dir/.pio/host-tests/button-input-tests"
+"$project_dir/.pio/host-tests/button-input-tests"

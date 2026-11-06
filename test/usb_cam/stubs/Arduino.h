@@ -3,6 +3,7 @@
 #include <cstring>
 #define OUTPUT 1
 #define INPUT_PULLDOWN 2
+#define INPUT_PULLUP 3
 #define HIGH 1
 #define LOW 0
 void pinMode(int pin, int mode);

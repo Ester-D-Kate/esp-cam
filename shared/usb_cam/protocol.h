@@ -23,6 +23,7 @@ struct Header {
   uint32_t control_spi_hz = 0;
   uint32_t camera_starts = 0, sensor_resets = 0, xclk_hz = 0;
   uint32_t capabilities = 0;
+  ButtonEvent button;
 };
 inline void encode_header(const Header& h, uint8_t* out) {
   memset(out, 0, kHeaderSize);
@@ -41,7 +42,11 @@ inline void encode_header(const Header& h, uint8_t* out) {
   put32(out + 68, h.command_errors);
   put32(out + 72, uint32_t(h.control_error));
   put32(out + 76, h.control_crc_received); put32(out + 80, h.control_crc_calculated);
-  memcpy(out + 84, h.control_prefix, sizeof(h.control_prefix));
+  if (h.capabilities & kButtonCapability) {
+    memcpy(out + 84, h.control_prefix, 8);
+    put32(out + 92, h.button.timestamp_ms); put32(out + 96, h.button.boot_id);
+    put32(out + 120, (h.button.sequence << 1) | uint32_t(h.button.pressed));
+  } else memcpy(out + 84, h.control_prefix, sizeof(h.control_prefix));
   put32(out + 100, h.control_spi_hz);
   put32(out + 104, h.camera_starts); put32(out + 108, h.sensor_resets);
   put32(out + 112, h.xclk_hz);
@@ -53,7 +58,8 @@ inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
       get16(data + 4) != 2 || get16(data + 6) != kHeaderSize ||
       data[8] > 1 || data[9] > 63 || get32(data + 124) != crc32(data, 124)) return false;
   if (get32(data + 72) > uint32_t(ConfigDecodeError::Values)) return false;
-  for (size_t i = 120; i < 124; ++i) if (data[i]) return false;
+  if (!(get32(data+116) & kButtonCapability) && get32(data+120)) return false;
+  if ((get32(data+116) & kButtonCapability) && !get32(data+96)) return false;
   Header h;
   h.kind = PacketKind(data[8]); h.quality = data[9]; h.sensor_pid = get16(data + 10);
   h.sequence = get32(data + 12); h.timestamp_us = get32(data + 16);
@@ -67,7 +73,10 @@ inline bool decode_header(const uint8_t* data, size_t length, Header& out) {
   h.command_errors = get32(data + 68);
   h.control_error = ConfigDecodeError(get32(data + 72));
   h.control_crc_received = get32(data + 76); h.control_crc_calculated = get32(data + 80);
-  memcpy(h.control_prefix, data + 84, sizeof(h.control_prefix));
+  if (get32(data+116) & kButtonCapability) {
+    memcpy(h.control_prefix, data + 84, 8);
+    h.button = {get32(data+96), get32(data+120) >> 1, get32(data+92), bool(data[120] & 1)};
+  } else memcpy(h.control_prefix, data + 84, sizeof(h.control_prefix));
   h.control_spi_hz = get32(data + 100);
   h.camera_starts = get32(data + 104); h.sensor_resets = get32(data + 108);
   h.xclk_hz = get32(data + 112);

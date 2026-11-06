@@ -2,6 +2,7 @@
 #include <cstring>
 #include "modes.h"
 #include "wire.h"
+#include "button.h"
 namespace usb_cam {
 constexpr size_t kControlSize = 128;
 constexpr uint32_t kMaxJpeg = USB_CAM_BUFFER_BYTES;
@@ -203,9 +204,7 @@ inline bool decode_config(const uint8_t* data, size_t length, Config& out,
   if (!data[76]) for (size_t i = 77; i < 82; ++i) if (data[i]) return fail(ConfigDecodeError::Reserved);
   if ((data[82] & ~7u) || data[85]) return fail(ConfigDecodeError::Reserved);
   if (!(data[82] & 1u)) for (size_t i = 82; i < 102; ++i) if (data[i]) return fail(ConfigDecodeError::Reserved);
-  for (size_t i = 102; i < 124; ++i) {
-    if (data[i]) return fail(ConfigDecodeError::Reserved);
-  }
+  if (!valid_button_ack_bytes(data)) return fail(ConfigDecodeError::Reserved);
   Config c;
   c.generation = get32(data + 8); c.width = get16(data + 12); c.height = get16(data + 14);
   c.interval_100ns = get32(data + 16); c.max_jpeg = get32(data + 20);

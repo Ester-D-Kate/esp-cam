@@ -3,6 +3,7 @@
 #include <esp_timer.h>
 #include "spi_link.h"
 #include "camera_control.h"
+#include "button_input.h"
 
 namespace {
 CameraControl camera;
@@ -17,6 +18,7 @@ void setup() {
   delay(250);
   Serial.println("USB POV camera v2: Pico controls sensor; remove SD/servo/gyro wiring");
   WiFi.mode(WIFI_OFF); btStop();
+  button_input::begin();
   link_initialized = camera_link::begin();
   if (!link_initialized) Serial.println("ERROR: SPI initialization failed");
 }
@@ -40,6 +42,7 @@ void loop() {
     delay(1); return;
   }
   camera.describe(counters);
+  button_input::write_header(counters);
   counters.kind = frame ? usb_cam::PacketKind::Frame : usb_cam::PacketKind::Status;
   counters.payload_size = frame ? length : 0;
   counters.payload_crc = frame ? usb_cam::crc32(frame->buf, length) : 0;
@@ -58,6 +61,9 @@ void loop() {
   counters.control_crc_received = usb_cam::get32(response + 124);
   counters.control_crc_calculated = usb_cam::crc32(response, 124);
   counters.control_spi_hz = usb_cam::kControlSpiHz;
-  if (usb_cam::decode_config(response, sizeof(response), desired, &counters.control_error)) camera.configure(desired);
+  if (usb_cam::decode_config(response, sizeof(response), desired, &counters.control_error)) {
+    button_input::acknowledge(usb_cam::decode_button_ack(response));
+    camera.configure(desired);
+  }
   else ++counters.command_errors;
 }
