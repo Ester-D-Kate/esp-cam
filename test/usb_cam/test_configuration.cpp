@@ -237,5 +237,12 @@ int main() {
   config = mode_config(10, USB_CAM_INTERVAL(5), USB_CAM_PROFILE_OV3660);
   assert(valid_config(config) && config.width == 1920 && config.height == 1080 && config.max_jpeg == 65536);
   assert(!valid_config(mode_config(11, USB_CAM_INTERVAL(5), USB_CAM_PROFILE_OV3660_LEGACY)));
+  // Hardware: OV2640 96x96 at Q12 can time out on low-detail scenes; Q4
+  // restored capture through runtime control. Other sensor presets stay intact.
+  const auto tiny2640 = mode_config(10, USB_CAM_INTERVAL(60), USB_CAM_PROFILE_OV2640_FULL);
+  const auto tiny3660 = mode_config(12, USB_CAM_INTERVAL(120), USB_CAM_PROFILE_OV3660_FULL);
+  assert(tiny2640.width == 96 && tiny2640.height == 96 && tiny2640.quality == 4);
+  assert(tiny3660.width == 96 && tiny3660.height == 96 && tiny3660.quality == 12);
+  assert(valid_config(tiny2640) && valid_config(tiny3660));
   puts("Configuration tests passed: CRC, bounds, settings, reset tokens and all modes.");
 }
