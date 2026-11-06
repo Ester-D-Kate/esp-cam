@@ -18,6 +18,7 @@ changing a supported mode does not require another ESP upload.
 | [`check-1`](https://github.com/Ester-D-Kate/esp-cam/tree/check-1) | Historical backup with single-board sources and archived two-board experiments | Read that branch's README before selecting a source tree |
 | [`codex/mqtt-servos`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/mqtt-servos) | Wireless camera with MQTT X/Y servos; SD recording/button disabled | Root `esp32cam`; that branch's README and `SERIAL_PROTOCOL.md` |
 | [`codex/usb-cam`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam) | This branch: ESP32 SPI → RP2040 USB camera | Root `usb_camera` plus `pico/zero_camera`; [USB guide](USB_CAMERA.md) |
+| [`codex/usb-cam-button`](https://github.com/Ester-D-Kate/esp-cam/tree/codex/usb-cam-button) | USB camera plus raw GPIO12 press/release HID | Separate branch README and paired button firmware |
 
 The root `esp32cam` environment retained **in this USB branch** is the MQTT-servo
 version, not the recording version from `main`. For USB, explicitly select
